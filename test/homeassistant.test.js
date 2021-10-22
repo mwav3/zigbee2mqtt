@@ -625,7 +625,7 @@ describe('HomeAssistant extension', () => {
 
         payload = {
             "state_topic":"zigbee2mqtt/fan",
-            "state_value_template":"{{ value_json.fan_state }}",
+            "state_value_template":"{{ value_json.fan_state | default('')}}",
             "command_topic":"zigbee2mqtt/fan/set/fan_state",
             "percentage_state_topic":"zigbee2mqtt/fan",
             "percentage_command_topic":"zigbee2mqtt/fan/set/fan_mode",
