@@ -7,13 +7,12 @@ const MQTT = require('./stub/mqtt');
 const settings = require('../lib/util/settings');
 const Controller = require('../lib/controller');
 const flushPromises = require('./lib/flushPromises');
-const mockExit = jest.spyOn(process, 'exit').mockImplementation(() => {});
 
-const mocksClear = [MQTT.publish, logger.warn, logger.debug];
+const mocksClear = [MQTT.publish, logger.warning, logger.debug];
 
 const zigbeeHerdsmanConverters = require('zigbee-herdsman-converters');
 const mockOnEvent = jest.fn();
-const mappedLivolo = zigbeeHerdsmanConverters.findByDevice(zigbeeHerdsman.devices.LIVOLO);
+const mappedLivolo = zigbeeHerdsmanConverters.findByModel('TI0001');
 mappedLivolo.onEvent = mockOnEvent;
 zigbeeHerdsmanConverters.onEvent = jest.fn();
 
@@ -48,6 +47,8 @@ describe('On event', () => {
         expect(call[0]).toBe('start')
         expect(call[1]).toStrictEqual({})
         expect(call[2]).toBe(device);
+        expect(call[3]).toStrictEqual(settings.getDevice(device.ieeeAddr));
+        expect(call[4]).toStrictEqual({});
     });
 
     it('Should call with stop event', async () => {
@@ -66,7 +67,7 @@ describe('On event', () => {
         await zigbeeHerdsman.events.deviceAnnounce({device});
         await flushPromises();
         expect(mockOnEvent).toHaveBeenCalledTimes(1);
-        expect(mockOnEvent).toHaveBeenCalledWith('deviceAnnounce', {device}, device, settings.getDevice(device.ieeeAddr));
+        expect(mockOnEvent).toHaveBeenCalledWith('deviceAnnounce', {device}, device, settings.getDevice(device.ieeeAddr), {});
     });
 
     it('Should call index onEvent with zigbee event', async () => {
@@ -74,6 +75,6 @@ describe('On event', () => {
         await zigbeeHerdsman.events.deviceAnnounce({device});
         await flushPromises();
         expect(zigbeeHerdsmanConverters.onEvent).toHaveBeenCalledTimes(1);
-        expect(zigbeeHerdsmanConverters.onEvent).toHaveBeenCalledWith('deviceAnnounce', {device}, device, settings.getDevice(device.ieeeAddr));
+        expect(zigbeeHerdsmanConverters.onEvent).toHaveBeenCalledWith('deviceAnnounce', {device}, device);
     });
 });

@@ -1,60 +1,71 @@
 
 import * as settings from '../util/settings';
-// @ts-ignore
-import zhc from 'zigbee-herdsman-converters';
+import * as zhc from 'zigbee-herdsman-converters';
+import * as philips from 'zigbee-herdsman-converters/lib/philips';
 import logger from '../util/logger';
-import * as utils from '../util/utils';
-import ExtensionTS from './extensionts';
-// @ts-ignore
+import utils from '../util/utils';
+import Extension from './extension';
 import stringify from 'json-stable-stringify-without-jsonify';
 import Group from '../model/group';
 import Device from '../model/device';
 import bind from 'bind-decorator';
 
-const topicRegex = new RegExp(`^(.+?)(?:/(${utils.endpointNames.join('|')}))?/(get|set)(?:/(.+))?`);
-const propertyEndpointRegex = new RegExp(`^(.*)_(${utils.endpointNames.join('|')})$`);
+let topicGetSetRegex: RegExp;
+// Used by `publish.test.js` to reload regex when changing `mqtt.base_topic`.
+export const loadTopicGetSetRegex = (): void => {
+    topicGetSetRegex = new RegExp(`^${settings.get().mqtt.base_topic}/(?!bridge)(.+?)/(get|set)(?:/(.+))?$`);
+};
+loadTopicGetSetRegex();
+
 const stateValues = ['on', 'off', 'toggle', 'open', 'close', 'stop', 'lock', 'unlock'];
+const sceneConverterKeys = ['scene_store', 'scene_add', 'scene_remove', 'scene_remove_all', 'scene_rename'];
 
 // Legacy: don't provide default converters anymore, this is required by older z2m installs not saving group members
 const defaultGroupConverters = [
-    zhc.toZigbeeConverters.light_onoff_brightness,
-    zhc.toZigbeeConverters.light_color_colortemp,
-    zhc.toZigbeeConverters.effect,
-    zhc.toZigbeeConverters.ignore_transition,
-    zhc.toZigbeeConverters.cover_position_tilt,
-    zhc.toZigbeeConverters.thermostat_occupied_heating_setpoint,
-    zhc.toZigbeeConverters.tint_scene,
-    zhc.toZigbeeConverters.light_brightness_move,
-    zhc.toZigbeeConverters.light_brightness_step,
-    zhc.toZigbeeConverters.light_colortemp_step,
-    zhc.toZigbeeConverters.light_colortemp_move,
-    zhc.toZigbeeConverters.light_hue_saturation_move,
-    zhc.toZigbeeConverters.light_hue_saturation_step,
+    zhc.toZigbee.light_onoff_brightness,
+    zhc.toZigbee.light_color_colortemp,
+    philips.tz.effect, // Support Hue effects for groups
+    zhc.toZigbee.ignore_transition,
+    zhc.toZigbee.cover_position_tilt,
+    zhc.toZigbee.thermostat_occupied_heating_setpoint,
+    zhc.toZigbee.tint_scene,
+    zhc.toZigbee.light_brightness_move,
+    zhc.toZigbee.light_brightness_step,
+    zhc.toZigbee.light_colortemp_step,
+    zhc.toZigbee.light_colortemp_move,
+    zhc.toZigbee.light_hue_saturation_move,
+    zhc.toZigbee.light_hue_saturation_step,
 ];
 
 interface ParsedTopic {ID: string, endpoint: string, attribute: string, type: 'get' | 'set'}
 
-class Publish extends ExtensionTS {
+export default class Publish extends Extension {
     async start(): Promise<void> {
-        this.eventBus.onMQTTMessage(this, this.onMQTTMessage_);
+        this.eventBus.onMQTTMessage(this, this.onMQTTMessage);
     }
 
     parseTopic(topic: string): ParsedTopic | null {
-        const match = topic.match(topicRegex);
-        if (!match) {
-            return null;
-        }
+        // The function supports the following topic formats (below are for 'set'. 'get' will look the same):
+        // - <base_topic>/device_name/set (endpoint and attribute is defined in the payload)
+        // - <base_topic>/device_name/set/attribute (default endpoint used)
+        // - <base_topic>/device_name/endpoint/set (attribute is defined in the payload)
+        // - <base_topic>/device_name/endpoint/set/attribute (payload is the value)
 
-        const ID = match[1].replace(`${settings.get().mqtt.base_topic}/`, '');
-        // If we didn't replace base_topic we received something we don't care about
-        if (ID === match[1] || ID.match(/bridge/)) {
-            return null;
-        }
+        // Make the rough split on get/set keyword.
+        // Before the get/set is the device name and optional endpoint name.
+        // After it there will be an optional attribute name.
+        const match = topic.match(topicGetSetRegex);
+        if (!match) return null;
 
-        return {ID: ID, endpoint: match[2], type: match[3] as 'get' | 'set', attribute: match[4]};
+        const deviceNameAndEndpoint = match[1];
+        const attribute = match[3];
+
+        // Now parse the device/group name, and endpoint name
+        const entity = this.zigbee.resolveEntityAndEndpoint(deviceNameAndEndpoint);
+        return {ID: entity.ID, endpoint: entity.endpointID, type: match[2] as 'get' | 'set', attribute: attribute};
     }
 
-    parseMessage(parsedTopic: ParsedTopic, data: EventMQTTMessage): KeyValue | null {
+    parseMessage(parsedTopic: ParsedTopic, data: eventdata.MQTTMessage): KeyValue | null {
         if (parsedTopic.attribute) {
             try {
                 return {[parsedTopic.attribute]: JSON.parse(data.message)};
@@ -81,8 +92,8 @@ class Publish extends ExtensionTS {
         }
     }
 
-    legacyRetrieveState(re: Device | Group, converter: ToZigbeeConverter, result: ToZigbeeConverterResult,
-        target: ZHEndpoint | ZHGroup, key: string, meta: ToZigbeeConverterGetMeta): void {
+    legacyRetrieveState(re: Device | Group, converter: zhc.Tz.Converter, result: zhc.Tz.ConvertSetResult,
+        target: zh.Endpoint | zh.Group, key: string, meta: zhc.Tz.Meta): void {
         // It's possible for devices to get out of sync when writing an attribute that's not reportable.
         // So here we re-read the value after a specified timeout, this timeout could for example be the
         // transition time of a color change or for forcing a state read for devices that don't
@@ -90,9 +101,9 @@ class Publish extends ExtensionTS {
         // When reporting is requested for a device (report: true in device-specific settings) we won't
         // ever issue a read here, as we assume the device will properly report changes.
         // Only do this when the retrieve_state option is enabled for this device.
-        // retrieve_state == decprecated
+        // retrieve_state == deprecated
         if (re instanceof Device && result && result.hasOwnProperty('readAfterWriteTime') &&
-            re.settings.retrieve_state
+            re.options.retrieve_state
         ) {
             setTimeout(() => converter.convertGet(target, key, meta), result.readAfterWriteTime);
         }
@@ -102,7 +113,7 @@ class Publish extends ExtensionTS {
         /**
          * Home Assistant always publishes 'state', even when e.g. only setting
          * the color temperature. This would lead to 2 zigbee publishes, where the first one
-         * (state) is probably unecessary.
+         * (state) is probably unnecessary.
          */
         if (settings.get().homeassistant) {
             const hasColorTemp = message.hasOwnProperty('color_temp');
@@ -116,8 +127,7 @@ class Publish extends ExtensionTS {
         }
     }
 
-    // TODO remove trailing _
-    @bind async onMQTTMessage_(data: EventMQTTMessage): Promise<void> {
+    @bind async onMQTTMessage(data: eventdata.MQTTMessage): Promise<void> {
         const parsedTopic = this.parseTopic(data.topic);
         if (!parsedTopic) return;
 
@@ -130,21 +140,18 @@ class Publish extends ExtensionTS {
 
         // Get entity details
         const definition = re instanceof Device ? re.definition : re.membersDefinitions();
-        if (definition == null) {
-            logger.error(`Cannot publish to unsupported device '${re.name}'`);
-            return;
-        }
-        const target = re instanceof Group ? re.zhGroup : re.endpoint(parsedTopic.endpoint);
+        const target = re instanceof Group ? re.zh : re.endpoint(parsedTopic.endpoint);
         if (target == null) {
             logger.error(`Device '${re.name}' has no endpoint '${parsedTopic.endpoint}'`);
             return;
         }
-        const device = re instanceof Device ? re.zhDevice : null;
-        const entitySettings = re.settings;
-        const entityState = this.state.get(re.ID) || {};
+        const device = re instanceof Device ? re.zh : null;
+        const entitySettings = re.options;
+        const entityState = this.state.get(re);
         const membersState = re instanceof Group ?
-            Object.fromEntries(re.membersIeeeAddr().map((e) => [e, this.state.get(e)])) : null;
-        let converters: ToZigbeeConverter[];
+            Object.fromEntries(re.zh.members.map((e) => [e.getDevice().ieeeAddr,
+                this.state.get(this.zigbee.resolveEntity(e.getDevice().ieeeAddr))])) : null;
+        let converters: zhc.Tz.Converter[];
         {
             if (Array.isArray(definition)) {
                 const c = new Set(definition.map((d) => d.toZigbee).flat());
@@ -167,7 +174,7 @@ class Publish extends ExtensionTS {
          * Order state & brightness based on current bulb state
          *
          * Not all bulbs support setting the color/color_temp while it is off
-         * this results in inconsistant behavior between different vendors.
+         * this results in inconsistent behavior between different vendors.
          *
          * bulb on => move state & brightness to the back
          * bulb off => move state & brightness to the front
@@ -177,18 +184,25 @@ class Publish extends ExtensionTS {
         entries.sort((a) => (['state', 'brightness', 'brightness_percent'].includes(a[0]) ? sorter : sorter * -1));
 
         // For each attribute call the corresponding converter
-        const usedConverters: {[s: number]: ToZigbeeConverter[]} = {};
+        const usedConverters: {[s: number]: zhc.Tz.Converter[]} = {};
         const toPublish: {[s: number | string]: KeyValue} = {};
-        const addToToPublish = (ID: number | string, payload: KeyValue): void => {
-            if (!(ID in toPublish)) toPublish[ID] = {};
+        const toPublishEntity: {[s: number | string]: Device | Group} = {};
+        const addToToPublish = (entity: Device | Group, payload: KeyValue): void => {
+            const ID = entity.ID;
+            if (!(ID in toPublish)) {
+                toPublish[ID] = {};
+                toPublishEntity[ID] = entity;
+            }
             toPublish[ID] = {...toPublish[ID], ...payload};
         };
+
+        const endpointNames = re instanceof Device ? re.getEndpointNames() : [];
+        const propertyEndpointRegex = new RegExp(`^(.*?)_(${endpointNames.join('|')})$`);
 
         for (let [key, value] of entries) {
             let endpointName = parsedTopic.endpoint;
             let localTarget = target;
-            // @ts-ignore TODO fix
-            let endpointOrGroupID = target.constructor.name === 'Endpoint' ? target.ID : target.groupID;
+            let endpointOrGroupID = utils.isEndpoint(target) ? target.ID : target.groupID;
 
             // When the key has a endpointName included (e.g. state_right), this will override the target.
             const propertyEndpointMatch = key.match(propertyEndpointRegex);
@@ -196,15 +210,13 @@ class Publish extends ExtensionTS {
                 endpointName = propertyEndpointMatch[2];
                 key = propertyEndpointMatch[1];
                 localTarget = re.endpoint(endpointName);
-                if (localTarget == null) {
-                    logger.error(`Device '${re.name}' has no endpoint '${endpointName}'`);
-                    continue;
-                }
                 endpointOrGroupID = localTarget.ID;
             }
 
             if (!usedConverters.hasOwnProperty(endpointOrGroupID)) usedConverters[endpointOrGroupID] = [];
-            const converter = converters.find((c) => c.key.includes(key));
+            /* istanbul ignore next */
+            const converter = converters.find((c) =>
+                c.key.includes(key) && (!c.endpoint || c.endpoint == endpointName));
 
             if (parsedTopic.type === 'set' && usedConverters[endpointOrGroupID].includes(converter)) {
                 // Use a converter for set only once
@@ -213,13 +225,22 @@ class Publish extends ExtensionTS {
             }
 
             if (!converter) {
-                logger.error(`No converter available for '${key}' (${message[key]})`);
+                logger.error(`No converter available for '${key}' (${stringify(message[key])})`);
                 continue;
             }
 
+            // If the endpoint_name name is a number, try to map it to a friendlyName
+            if (!isNaN(Number(endpointName)) && re.isDevice() && utils.isEndpoint(localTarget) &&
+                re.endpointName(localTarget)) {
+                endpointName = re.endpointName(localTarget);
+            }
+
             // Converter didn't return a result, skip
-            const meta = {endpoint_name: endpointName, options: entitySettings, message: {...message}, logger, device,
-                state: entityState, membersState, mapped: definition};
+            const entitySettingsKeyValue: KeyValue = entitySettings;
+            const meta = {
+                endpoint_name: endpointName, options: entitySettingsKeyValue,
+                message: {...message}, logger, device, state: entityState, membersState, mapped: definition,
+            };
 
             // Strip endpoint name from meta.message properties.
             if (endpointName) {
@@ -248,13 +269,14 @@ class Publish extends ExtensionTS {
                         }
 
                         // filter out attribute listed in filtered_optimistic
-                        entitySettings.filtered_optimistic?.forEach((a) => delete msg[a]);
-                        addToToPublish(re.ID, msg);
+                        utils.filterProperties(entitySettings.filtered_optimistic, msg);
+
+                        addToToPublish(re, msg);
                     }
 
                     if (result && result.membersState && optimistic) {
                         for (const [ieeeAddr, state] of Object.entries(result.membersState)) {
-                            addToToPublish(ieeeAddr, state);
+                            addToToPublish(this.zigbee.resolveEntity(ieeeAddr), state);
                         }
                     }
 
@@ -279,11 +301,14 @@ class Publish extends ExtensionTS {
 
         for (const [ID, payload] of Object.entries(toPublish)) {
             if (Object.keys(payload).length != 0) {
-                this.publishEntityState(ID, payload);
+                this.publishEntityState(toPublishEntity[ID], payload);
             }
+        }
+
+        const scenesChanged = Object.values(usedConverters)
+            .some((cl) => cl.some((c) => c.key.some((k) => sceneConverterKeys.includes(k))));
+        if (scenesChanged) {
+            this.eventBus.emitScenesChanged({entity: re});
         }
     }
 }
-
-// TODO_finished: : change class to export default
-module.exports = Publish;

@@ -1,26 +1,32 @@
 /* eslint-disable brace-style */
 import * as settings from '../util/settings';
-// @ts-ignore
-import zhc from 'zigbee-herdsman-converters';
+import * as zhc from 'zigbee-herdsman-converters';
 
 export default class Group {
-    private group: ZHGroup;
+    public zh: zh.Group;
+    private resolveDevice: (ieeeAddr: string) => Device;
 
-    get zhGroup(): ZHGroup {return this.group;}
-    get ID(): number {return this.group.groupID;}
-    get settings(): GroupSettings {return settings.getGroup(this.ID);}
-    get name(): string {return this.settings?.friendlyName || this.ID.toString();}
-    get members(): ZHEndpoint[] {return this.group.members;}
+    get ID(): number {return this.zh.groupID;}
+    get options(): GroupOptions {return {...settings.getGroup(this.ID)};}
+    get name(): string {return this.options?.friendly_name || this.ID.toString();}
 
-    constructor(group: ZHGroup) {
-        this.group = group;
+    constructor(group: zh.Group, resolveDevice: (ieeeAddr: string) => Device) {
+        this.zh = group;
+        this.resolveDevice = resolveDevice;
     }
 
-    membersDefinitions(): Definition[] {
-        return this.members.map((m) => zhc.findByDevice(m.getDevice())).filter((d) => d) as Definition[];
+    hasMember(device: Device): boolean {
+        return !!device.zh.endpoints.find((e) => this.zh.members.includes(e));
     }
 
-    membersIeeeAddr(): string[] {
-        return this.members.map((m) => m.getDevice().ieeeAddr);
+    membersDevices(): Device[] {
+        return this.zh.members.map((e) => this.resolveDevice(e.getDevice().ieeeAddr)).filter((d) => d);
     }
+
+    membersDefinitions(): zhc.Definition[] {
+        return this.membersDevices().map((d) => d.definition).filter((d) => d);
+    }
+
+    isDevice(): this is Device {return false;}
+    isGroup(): this is Group {return true;}
 }

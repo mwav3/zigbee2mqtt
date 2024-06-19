@@ -157,7 +157,7 @@ describe('Bind', () => {
         expect(target.configureReporting).toHaveBeenCalledWith("genOnOff",[{"attribute": "onOff", "maximumReportInterval": 0xFFFF, "minimumReportInterval": 0, "reportableChange": 0}]);
         expect(target.configureReporting).toHaveBeenCalledWith("genLevelCtrl",[{"attribute": "currentLevel", "maximumReportInterval": 0xFFFF, "minimumReportInterval": 5, "reportableChange": 1}]);
         expect(target.configureReporting).toHaveBeenCalledWith("lightingColorCtrl",[{"attribute":"colorTemperature","minimumReportInterval":5,"maximumReportInterval":0xFFFF,"reportableChange":1},{"attribute":"currentX","minimumReportInterval":5,"maximumReportInterval":0xFFFF,"reportableChange":1},{"attribute":"currentY","minimumReportInterval":5,"maximumReportInterval":0xFFFF,"reportableChange":1}]);
-        expect(zigbeeHerdsman.devices.bulb_color.meta.configured).toBe(2);
+        expect(zigbeeHerdsman.devices.bulb_color.meta.configured).toBe(332242049);
         expect(MQTT.publish).toHaveBeenCalledWith(
             'zigbee2mqtt/bridge/response/device/unbind',
             stringify({"data":{"from":"remote","to":"bulb_color","clusters":["genScenes","genOnOff","genLevelCtrl"],"failed":[]},"status":"ok"}),
@@ -387,7 +387,7 @@ describe('Bind', () => {
         );
     });
 
-    it('Error bind fails when source not existing', async () => {
+    it('Error bind fails when source device does not exist', async () => {
         const device = zigbeeHerdsman.devices.remote;
         const target = zigbeeHerdsman.devices.bulb_color.getEndpoint(1);
         const endpoint = device.getEndpoint(1);
@@ -401,7 +401,21 @@ describe('Bind', () => {
         );
     });
 
-    it('Error bind fails when target not existing', async () => {
+    it("Error bind fails when source device's endpoint does not exist", async () => {
+        const device = zigbeeHerdsman.devices.remote;
+        const target = zigbeeHerdsman.devices.bulb_color.getEndpoint(1);
+        const endpoint = device.getEndpoint(1);
+        mockClear(device);
+        MQTT.events.message('zigbee2mqtt/bridge/request/device/bind', stringify({from: 'remote/not_existing_endpoint', to: 'bulb_color'}));
+        await flushPromises();
+        expect(MQTT.publish).toHaveBeenCalledWith(
+            'zigbee2mqtt/bridge/response/device/bind',
+            stringify({"data":{"from":"remote/not_existing_endpoint","to":"bulb_color"},"status":"error","error":"Source device 'remote' does not have endpoint 'not_existing_endpoint'"}),
+            {retain: false, qos: 0}, expect.any(Function)
+        );
+    });
+
+    it('Error bind fails when target device or group does not exist', async () => {
         const device = zigbeeHerdsman.devices.remote;
         const target = zigbeeHerdsman.devices.bulb_color.getEndpoint(1);
         const endpoint = device.getEndpoint(1);
@@ -411,6 +425,20 @@ describe('Bind', () => {
         expect(MQTT.publish).toHaveBeenCalledWith(
             'zigbee2mqtt/bridge/response/device/bind',
             stringify({"data":{"from":"remote","to":"bulb_color_not_existing"},"status":"error","error":"Target device or group 'bulb_color_not_existing' does not exist"}),
+            {retain: false, qos: 0}, expect.any(Function)
+        );
+    });
+
+    it("Error bind fails when target device's endpoint does not exist", async () => {
+        const device = zigbeeHerdsman.devices.remote;
+        const target = zigbeeHerdsman.devices.bulb_color.getEndpoint(1);
+        const endpoint = device.getEndpoint(1);
+        mockClear(device);
+        MQTT.events.message('zigbee2mqtt/bridge/request/device/bind', stringify({from: 'remote', to: 'bulb_color/not_existing_endpoint'}));
+        await flushPromises();
+        expect(MQTT.publish).toHaveBeenCalledWith(
+            'zigbee2mqtt/bridge/response/device/bind',
+            stringify({"data":{"from":"remote","to":"bulb_color/not_existing_endpoint"},"status":"error","error":"Target device 'bulb_color' does not have endpoint 'not_existing_endpoint'"}),
             {retain: false, qos: 0}, expect.any(Function)
         );
     });
@@ -588,6 +616,7 @@ describe('Bind', () => {
     it('Should poll bounded Hue bulb when receiving message from scene controller', async () => {
         const remote = zigbeeHerdsman.devices.bj_scene_switch;
         const data = {"action": "recall_2_row_1"};
+        zigbeeHerdsman.devices.bulb_color_2.getEndpoint(1).read.mockImplementationOnce(() => {throw new Error('failed')});
         const payload = {data, cluster: 'genScenes', device: remote, endpoint: remote.getEndpoint(10), type: 'commandRecall', linkquality: 10, groupID: 0};
         await zigbeeHerdsman.events.message(payload);
         await flushPromises();
@@ -595,7 +624,7 @@ describe('Bind', () => {
         expect(debounce).toHaveBeenCalledTimes(3);
         expect(zigbeeHerdsman.devices.bulb_color_2.getEndpoint(1).read).toHaveBeenCalledWith("genOnOff", ["onOff"]);
         expect(zigbeeHerdsman.devices.bulb_color_2.getEndpoint(1).read).toHaveBeenCalledWith("genLevelCtrl", ["currentLevel"]);
-	expect(zigbeeHerdsman.devices.bulb_color_2.getEndpoint(1).read).toHaveBeenCalledWith("lightingColorCtrl", ["currentX", "currentY", "colorTemperature"]);
+	    expect(zigbeeHerdsman.devices.bulb_color_2.getEndpoint(1).read).toHaveBeenCalledWith("lightingColorCtrl", ["currentX", "currentY", "colorTemperature"]);
     });
 
     it('Should poll grouped Hue bulb when receiving message from TRADFRI remote', async () => {

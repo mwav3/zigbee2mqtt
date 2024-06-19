@@ -16,7 +16,7 @@ const Controller = require('../../lib/controller');
 const flushPromises = require('../lib/flushPromises');
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-const mocksClear = [MQTT.publish, logger.warn, logger.debug];
+const mocksClear = [MQTT.publish, logger.warning, logger.debug];
 
 describe('Report', () => {
     let controller;
@@ -89,7 +89,7 @@ describe('Report', () => {
         mocksClear.forEach((m) => m.mockClear());
         extension.queue = new Set();
         extension.failed = new Set();
-        await extension.onZigbeeStarted();
+        await extension.start();
     });
 
     afterAll(async () => {
@@ -97,7 +97,7 @@ describe('Report', () => {
     });
 
     it('Should configure reporting on startup', async () => {
-        await extension.onZigbeeStarted();
+        await extension.start();
         const device = zigbeeHerdsman.devices.bulb_color;
         const endpoint = device.getEndpoint(1);
         expectOnOffBrightnessColorReport(endpoint, true);
@@ -109,7 +109,7 @@ describe('Report', () => {
         mockClear(device);
         delete device.meta.report;
         extension.enabled = false;
-        await extension.onZigbeeStarted();
+        await extension.start();
         expect(device.meta.reporting).toBe(undefined);
         expect(endpoint.bind).toHaveBeenCalledTimes(0);
     });
@@ -120,7 +120,7 @@ describe('Report', () => {
         const endpoint = device.getEndpoint(1);
         extension.enabled = false;
         mockClear(device);
-        await extension.onZigbeeStarted();
+        await extension.start();
         expectOnOffBrightnessColorReportDisabled(endpoint, true);
     });
 

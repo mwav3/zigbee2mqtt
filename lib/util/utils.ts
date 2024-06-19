@@ -1,12 +1,10 @@
 import equals from 'fast-deep-equal/es6';
 import humanizeDuration from 'humanize-duration';
-import * as data from './data';
+import data from './data';
 import vm from 'vm';
 import fs from 'fs';
 import path from 'path';
-import {Endpoint} from 'zigbee-herdsman/dist/controller/model';
-
-// TODO: check all
+import type * as zhc from 'zigbee-herdsman-converters';
 
 // construct a local ISO8601 string (instead of UTC-based)
 // Example:
@@ -30,32 +28,17 @@ function toLocalISOString(date: Date): string {
         ':' + pad(tzOffset % 60);
 }
 
-export const endpointNames = [
-    'left', 'right', 'center', 'bottom_left', 'bottom_right', 'default',
-    'top_left', 'top_right', 'white', 'rgb', 'cct', 'system', 'top', 'bottom', 'center_left', 'center_right',
-    'ep1', 'ep2', 'row_1', 'row_2', 'row_3', 'row_4', 'relay', 'usb',
-    'l1', 'l2', 'l3', 'l4', 'l5', 'l6', 'l7', 'l8',
-    'l9', 'l10', 'l11', 'l12', 'l13', 'l14', 'l15', 'l16',
-    'button_1', 'button_2', 'button_3', 'button_4', 'button_5',
-    'button_6', 'button_7', 'button_8', 'button_9', 'button_10',
-    'button_11', 'button_12', 'button_13', 'button_14', 'button_15',
-    'button_16', 'button_17', 'button_18', 'button_19', 'button_20',
-    'button_light', 'button_fan_high', 'button_fan_med', 'button_fan_low',
-    'heat', 'cool', 'water', 'meter', 'wifi',
-];
-
-export function capitalize(s: string): string {
+function capitalize(s: string): string {
     return s[0].toUpperCase() + s.slice(1);
 }
 
-export async function getZigbee2MQTTVersionSimple(): Promise<string> {
-    const packageJSON = await import('../..' + '/package.json');
-    return packageJSON.version;
-}
-
-export async function getZigbee2MQTTVersion(): Promise<{commitHash: string, version: string}> {
+async function getZigbee2MQTTVersion(includeCommitHash=true): Promise<{commitHash: string, version: string}> {
     const git = await import('git-last-commit');
     const packageJSON = await import('../..' + '/package.json');
+
+    if (!includeCommitHash) {
+        return {version: packageJSON.version, commitHash: null};
+    }
 
     return new Promise((resolve) => {
         const version = packageJSON.version;
@@ -74,18 +57,21 @@ export async function getZigbee2MQTTVersion(): Promise<{commitHash: string, vers
                 commitHash = commit.shortHash;
             }
 
+            commitHash = commitHash.trim();
             resolve({commitHash, version});
         });
     });
 }
 
-export async function getDependencyVersion(depend: string): Promise<{version: string}> {
-    const packageJSON = await import(path.join(__dirname, '..', '..', 'node_modules', depend, 'package.json'));
+async function getDependencyVersion(depend: string): Promise<{version: string}> {
+    const modulePath = path.dirname(require.resolve(depend));
+    const packageJSONPath = path.join(modulePath.slice(0, modulePath.indexOf(depend) + depend.length), 'package.json');
+    const packageJSON = await import(packageJSONPath);
     const version = packageJSON.version;
     return {version};
 }
 
-export function formatDate(time: number, type: 'ISO_8601' | 'ISO_8601_local' | 'epoch' | 'relative'): string | number {
+function formatDate(time: number, type: 'ISO_8601' | 'ISO_8601_local' | 'epoch' | 'relative'): string | number {
     if (type === 'ISO_8601') return new Date(time).toISOString();
     else if (type === 'ISO_8601_local') return toLocalISOString(new Date(time));
     else if (type === 'epoch') return time;
@@ -94,7 +80,7 @@ export function formatDate(time: number, type: 'ISO_8601' | 'ISO_8601_local' | '
     }
 }
 
-export function objectHasProperties(object: {[s: string]: unknown}, properties: string[]): boolean {
+function objectHasProperties(object: {[s: string]: unknown}, properties: string[]): boolean {
     for (const property of properties) {
         if (!object.hasOwnProperty(property)) {
             return false;
@@ -104,7 +90,7 @@ export function objectHasProperties(object: {[s: string]: unknown}, properties: 
     return true;
 }
 
-export function equalsPartial(object: {[s: string]: unknown}, expected: {[s: string]: unknown}): boolean {
+function equalsPartial(object: KeyValue, expected: KeyValue): boolean {
     for (const [key, value] of Object.entries(expected)) {
         if (!equals(object[key], value)) {
             return false;
@@ -114,13 +100,12 @@ export function equalsPartial(object: {[s: string]: unknown}, expected: {[s: str
     return true;
 }
 
-export function getObjectProperty(object: {[s: string]: unknown}, key: string, defaultValue: unknown): unknown {
+function getObjectProperty(object: KeyValue, key: string, defaultValue: unknown): unknown {
     return object && object.hasOwnProperty(key) ? object[key] : defaultValue;
 }
 
-export function getResponse(request: KeyValue | string, data: KeyValue, error: string): MQTTResponse {
-    const response: {data: unknown, status: string, error?: string, transaction?: string} =
-        {data, status: error ? 'error' : 'ok'};
+function getResponse(request: KeyValue | string, data: KeyValue, error: string): MQTTResponse {
+    const response: MQTTResponse = {data, status: error ? 'error' : 'ok'};
     if (error) response.error = error;
     if (typeof request === 'object' && request.hasOwnProperty('transaction')) {
         response.transaction = request.transaction;
@@ -128,16 +113,16 @@ export function getResponse(request: KeyValue | string, data: KeyValue, error: s
     return response;
 }
 
-export function parseJSON(value: string, failedReturnValue: string): KeyValue | string {
+function parseJSON(value: string, fallback: string): KeyValue | string {
     try {
         return JSON.parse(value);
     } catch (e) {
-        return failedReturnValue;
+        return fallback;
     }
 }
 
-export function loadModuleFromText(moduleCode: string): unknown {
-    const moduleFakePath = path.join(__dirname, 'externally-loaded.js');
+function loadModuleFromText(moduleCode: string, name?: string): unknown {
+    const moduleFakePath = path.join(__dirname, '..', '..', 'data', 'extension', name || 'externally-loaded.js');
     const sandbox = {
         require: require,
         module: {},
@@ -154,35 +139,30 @@ export function loadModuleFromText(moduleCode: string): unknown {
     return sandbox.module.exports;
 }
 
-export function loadModuleFromFile(modulePath: string): unknown {
+function loadModuleFromFile(modulePath: string): unknown {
     const moduleCode = fs.readFileSync(modulePath, {encoding: 'utf8'});
     return loadModuleFromText(moduleCode);
 }
 
-/* eslint-disable-next-line */
-export function* getExternalConvertersDefinitions(settings: any): any {
-    const externalConverters = settings.get().external_converters;
+export function* loadExternalConverter(moduleName: string): Generator<ExternalDefinition> {
+    let converter;
 
-    for (const moduleName of externalConverters) {
-        let converter;
+    if (moduleName.endsWith('.js')) {
+        converter = loadModuleFromFile(data.joinPath(moduleName));
+    } else {
+        converter = require(moduleName);
+    }
 
-        if (moduleName.endsWith('.js')) {
-            converter = loadModuleFromFile(data.joinPath(moduleName));
-        } else {
-            converter = require(moduleName);
+    if (Array.isArray(converter)) {
+        for (const item of converter) {
+            yield item;
         }
-
-        if (Array.isArray(converter)) {
-            for (const item of converter) {
-                yield item;
-            }
-        } else {
-            yield converter;
-        }
+    } else {
+        yield converter;
     }
 }
 
-export function removeNullPropertiesFromObject(obj: KeyValue): void {
+function removeNullPropertiesFromObject(obj: KeyValue): void {
     for (const key of Object.keys(obj)) {
         const value = obj[key];
         if (value == null) {
@@ -193,24 +173,13 @@ export function removeNullPropertiesFromObject(obj: KeyValue): void {
     }
 }
 
-export function getKey(
-    object: KeyValue, value: unknown, fallback: unknown, convertTo: (v: unknown) => unknown): unknown {
-    for (const key in object) {
-        if (object[key]===value) {
-            return convertTo ? convertTo(key) : key;
-        }
-    }
-
-    return fallback;
-}
-
-export function toNetworkAddressHex(value: number): string {
+function toNetworkAddressHex(value: number): string {
     const hex = value.toString(16);
     return `0x${'0'.repeat(4 - hex.length)}${hex}`;
 }
 
 // eslint-disable-next-line
-export function toSnakeCase(value: string | KeyValue): any {
+function toSnakeCase(value: string | KeyValue): any {
     if (typeof value === 'object') {
         value = {...value};
         for (const key of Object.keys(value)) {
@@ -226,18 +195,49 @@ export function toSnakeCase(value: string | KeyValue): any {
     }
 }
 
-export function validateFriendlyName(name: string, throwFirstError=false): string[] {
-    const errors = [];
-    for (const endpointName of endpointNames) {
-        if (name.toLowerCase().endsWith('/' + endpointName)) {
-            errors.push(`friendly_name is not allowed to end with: '/${endpointName}'`);
+function charRange(start: string, stop: string): number[] {
+    const result = [];
+    for (let idx=start.charCodeAt(0), end=stop.charCodeAt(0); idx <=end; ++idx) {
+        result.push(idx);
+    }
+    return result;
+}
+
+const controlCharacters = [
+    ...charRange('\u0000', '\u001F'),
+    ...charRange('\u007f', '\u009F'),
+    ...charRange('\ufdd0', '\ufdef'),
+];
+
+function containsControlCharacter(str: string): boolean {
+    for (let i = 0; i < str.length; i++) {
+        const ch = str.charCodeAt(i);
+        if (controlCharacters.includes(ch) || [0xFFFE, 0xFFFF].includes(ch & 0xFFFF)) {
+            return true;
         }
     }
+    return false;
+}
+
+function getAllFiles(path_: string): string[] {
+    const result = [];
+    for (let item of fs.readdirSync(path_)) {
+        item = path.join(path_, item);
+        if (fs.lstatSync(item).isFile()) {
+            result.push(item);
+        } else {
+            result.push(...getAllFiles(item));
+        }
+    }
+    return result;
+}
+
+function validateFriendlyName(name: string, throwFirstError=false): string[] {
+    const errors = [];
 
     if (name.length === 0) errors.push(`friendly_name must be at least 1 char long`);
     if (name.endsWith('/') || name.startsWith('/')) errors.push(`friendly_name is not allowed to end or start with /`);
-    if (name.endsWith(String.fromCharCode(0))) errors.push(`friendly_name is not allowed to contain null char`);
-    if (endpointNames.includes(name)) errors.push(`Following friendly_name are not allowed: '${endpointNames}'`);
+    if (containsControlCharacter(name)) errors.push(`friendly_name is not allowed to contain control char`);
     if (name.match(/.*\/\d*$/)) errors.push(`Friendly name cannot end with a "/DIGIT" ('${name}')`);
     if (name.includes('#') || name.includes('+')) {
         errors.push(`MQTT wildcard (+ and #) not allowed in friendly_name ('${name}')`);
@@ -250,79 +250,126 @@ export function validateFriendlyName(name: string, throwFirstError=false): strin
     return errors;
 }
 
-export function sleep(seconds: number): Promise<void> {
+function sleep(seconds: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, seconds * 1000));
 }
 
-export function sanitizeImageParameter(parameter: string): string {
+function sanitizeImageParameter(parameter: string): string {
     const replaceByDash = [/\?/g, /&/g, /[^a-z\d\- _./:]/gi];
     let sanitized = parameter;
     replaceByDash.forEach((r) => sanitized = sanitized.replace(r, '-'));
     return sanitized;
 }
 
-export function isAvailabilityEnabledForDevice(device: Device, settings: Settings): boolean {
-    /* istanbul ignore next */
-    if (!settings.experimental.availability_new) return false;
+function isAvailabilityEnabledForEntity(entity: Device | Group, settings: Settings): boolean {
+    if (entity.isGroup()) {
+        return !entity.membersDevices().map((d) => isAvailabilityEnabledForEntity(d, settings)).includes(false);
+    }
 
-    if (device.settings.hasOwnProperty('availability')) {
-        return !!device.settings.availability;
+    if (entity.options.hasOwnProperty('availability')) {
+        return !!entity.options.availability;
     }
 
     // availability_timeout = deprecated
     const enabledGlobal = settings.advanced.availability_timeout || settings.availability;
     if (!enabledGlobal) return false;
 
-    const passlist = settings.advanced.availability_passlist.concat(settings.advanced.availability_whitelist);
-    if (passlist.length > 0) {
-        return passlist.includes(device.name) || passlist.includes(device.ieeeAddr);
-    }
-
-    const blocklist = settings.advanced.availability_blacklist.concat(settings.advanced.availability_blocklist);
-    return !blocklist.includes(device.name) && !blocklist.includes(device.ieeeAddr);
-}
-
-/* istanbul ignore next */
-export function isAvailabilityEnabledForDeviceLegacy(rd: ResolvedDevice, settings: Settings): boolean {
-    if (!settings.experimental.availability_new) return false;
-
-    if (rd.settings.hasOwnProperty('availability')) {
-        return !!rd.settings.availability;
-    }
-
-    // availability_timeout = deprecated
-    const enabledGlobal = settings.advanced.availability_timeout || settings.availability;
-    if (!enabledGlobal) return false;
+    if (entity.isDevice() && entity.options.disabled) return false;
 
     const passlist = settings.advanced.availability_passlist.concat(settings.advanced.availability_whitelist);
     if (passlist.length > 0) {
-        return passlist.includes(rd.name) || passlist.includes(rd.device.ieeeAddr);
+        return passlist.includes(entity.name) || passlist.includes(entity.ieeeAddr);
     }
 
     const blocklist = settings.advanced.availability_blacklist.concat(settings.advanced.availability_blocklist);
-    return !blocklist.includes(rd.name) && !blocklist.includes(rd.device.ieeeAddr);
+    return !blocklist.includes(entity.name) && !blocklist.includes(entity.ieeeAddr);
 }
 
-export function isXiaomiDevice(device: ZHDevice): boolean {
-    const xiaomiManufacturerID = [4151, 4447];
-    return device.modelID !== 'lumi.router' && xiaomiManufacturerID.includes(device.manufacturerID) &&
-        (!device.manufacturerName || !device.manufacturerName.startsWith('Trust'));
-}
-
-export function isIkeaTradfriDevice(device: ZHDevice): boolean {
-    return [4476].includes(device.manufacturerID);
-}
-
-const entityIDRegex = new RegExp(`^(.+?)(?:/(${endpointNames.join('|')}|\\d+))?$`);
-export function parseEntityID(ID: string): {ID: string, endpoint: string} {
-    const match = ID.match(entityIDRegex);
-    return match && {ID: match[1], endpoint: match[2]};
-}
-
-export function isEndpoint(obj: unknown): obj is Endpoint {
+function isEndpoint(obj: unknown): obj is zh.Endpoint {
     return obj.constructor.name.toLowerCase() === 'endpoint';
 }
 
-export const hours = (hours: number): number => 1000 * 60 * 60 * hours;
-export const minutes = (minutes: number): number => 1000 * 60 * minutes;
-export const seconds = (seconds: number): number => 1000 * seconds;
+function flatten<Type>(arr: Type[][]): Type[] {
+    return [].concat(...arr);
+}
+
+function arrayUnique<Type>(arr: Type[]): Type[] {
+    return [...new Set(arr)];
+}
+
+function isZHGroup(obj: unknown): obj is zh.Group {
+    return obj.constructor.name.toLowerCase() === 'group';
+}
+
+function availabilityPayload(state: 'online' | 'offline', settings: Settings): string {
+    return settings.advanced.legacy_availability_payload ? state : JSON.stringify({state});
+}
+
+const hours = (hours: number): number => 1000 * 60 * 60 * hours;
+const minutes = (minutes: number): number => 1000 * 60 * minutes;
+const seconds = (seconds: number): number => 1000 * seconds;
+
+function publishLastSeen(data: eventdata.LastSeenChanged, settings: Settings, allowMessageEmitted: boolean,
+    publishEntityState: PublishEntityState): void {
+    /**
+     * Prevent 2 MQTT publishes when 1 message event is received;
+     * - In case reason == messageEmitted, receive.ts will only call this when it did not publish a
+     *      message based on the received zigbee message. In this case allowMessageEmitted has to be true.
+     * - In case reason !== messageEmitted, controller.ts will call this based on the zigbee-herdsman
+     *      lastSeenChanged event.
+     */
+    const allow = data.reason !== 'messageEmitted' || (data.reason === 'messageEmitted' && allowMessageEmitted);
+    if (settings.advanced.last_seen && settings.advanced.last_seen !== 'disable' && allow) {
+        publishEntityState(data.device, {}, 'lastSeenChanged');
+    }
+}
+
+function filterProperties(filter: string[], data: KeyValue): void {
+    if (filter) {
+        for (const property of Object.keys(data)) {
+            if (filter.find((p) => property.match(`^${p}$`))) {
+                delete data[property];
+            }
+        }
+    }
+}
+
+export function isNumericExposeFeature(feature: zhc.Feature): feature is zhc.Numeric {
+    return feature?.type === 'numeric';
+}
+
+export function isEnumExposeFeature(feature: zhc.Feature): feature is zhc.Enum {
+    return feature?.type === 'enum';
+}
+
+export function isBinaryExposeFeature(feature: zhc.Feature): feature is zhc.Binary {
+    return feature?.type === 'binary';
+}
+
+function getScenes(entity: zh.Endpoint | zh.Group): Scene[] {
+    const scenes: {[id: number]: Scene} = {};
+    const endpoints = isEndpoint(entity) ? [entity] : entity.members;
+    const groupID = isEndpoint(entity) ? 0 : entity.groupID;
+
+    for (const endpoint of endpoints) {
+        for (const [key, data] of Object.entries(endpoint.meta?.scenes || {})) {
+            const split = key.split('_');
+            const sceneID = parseInt(split[0], 10);
+            const sceneGroupID = parseInt(split[1], 10);
+            if (sceneGroupID === groupID) {
+                scenes[sceneID] = {id: sceneID, name: (data as KeyValue).name || `Scene ${sceneID}`};
+            }
+        }
+    }
+
+    return Object.values(scenes);
+}
+
+export default {
+    capitalize, getZigbee2MQTTVersion, getDependencyVersion, formatDate, objectHasProperties,
+    equalsPartial, getObjectProperty, getResponse, parseJSON, loadModuleFromText, loadModuleFromFile,
+    removeNullPropertiesFromObject, toNetworkAddressHex, toSnakeCase,
+    isEndpoint, isZHGroup, hours, minutes, seconds, validateFriendlyName, sleep,
+    sanitizeImageParameter, isAvailabilityEnabledForEntity, publishLastSeen, availabilityPayload,
+    getAllFiles, filterProperties, flatten, arrayUnique, getScenes,
+};

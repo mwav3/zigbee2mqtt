@@ -30,7 +30,7 @@ describe('Groups', () => {
         await controller.start();
         await flushPromises();
     });
-    
+
     afterAll(async () => {
         jest.useRealTimers();
     });
@@ -41,7 +41,7 @@ describe('Groups', () => {
         settings.reRead();
         MQTT.publish.mockClear();
         zigbeeHerdsman.groups.gledopto_group.command.mockClear();
-        zigbeeHerdsmanConverters.toZigbeeConverters.__clearStore__();
+        zigbeeHerdsmanConverters.toZigbee.__clearStore__();
         controller.state.state = {};
     })
 
@@ -273,12 +273,20 @@ describe('Groups', () => {
         expect(logger.error).toHaveBeenCalledWith("Group 'group_1_not_existing' does not exist");
     });
 
-    it('Legacy api: Log when adding to non-existing device', async () => {
+    it('Legacy api: Log when adding a non-existing device', async () => {
         await resetExtension();
         logger.error.mockClear();
         MQTT.events.message('zigbee2mqtt/bridge/group/group_1/add', 'bulb_color_not_existing');
         await flushPromises();
         expect(logger.error).toHaveBeenCalledWith("Device 'bulb_color_not_existing' does not exist");
+    });
+
+    it('Legacy api: Log when adding a non-existing endpoint', async () => {
+        await resetExtension();
+        logger.error.mockClear();
+        MQTT.events.message('zigbee2mqtt/bridge/group/group_1/add', 'bulb_color/not_existing_endpoint');
+        await flushPromises();
+        expect(logger.error).toHaveBeenCalledWith("Device 'bulb_color' does not have endpoint 'not_existing_endpoint'");
     });
 
     it('Should publish group state change when a device in it changes state', async () => {
@@ -331,6 +339,22 @@ describe('Groups', () => {
         await flushPromises();
         expect(MQTT.publish).toHaveBeenCalledTimes(2);
         expect(MQTT.publish).toHaveBeenCalledWith("zigbee2mqtt/bulb_color", stringify({"state":"ON"}), {"retain": false, qos: 0}, expect.any(Function));
+        expect(MQTT.publish).toHaveBeenCalledWith("zigbee2mqtt/group_1", stringify({"state":"ON"}), {"retain": false, qos: 0}, expect.any(Function));
+    });
+
+    it('Should not publish state change when group changes state and device is disabled', async () => {
+        const device = zigbeeHerdsman.devices.bulb_color;
+        const endpoint = device.getEndpoint(1);
+        const group = zigbeeHerdsman.groups.group_1;
+        group.members.push(endpoint);
+        settings.set(['devices', device.ieeeAddr, 'disabled'], true);
+        settings.set(['groups'], {'1': {friendly_name: 'group_1', retain: false, devices: [device.ieeeAddr]}});
+        await resetExtension();
+
+        MQTT.publish.mockClear();
+        await MQTT.events.message('zigbee2mqtt/group_1/set', stringify({state: 'ON'}));
+        await flushPromises();
+        expect(MQTT.publish).toHaveBeenCalledTimes(1);
         expect(MQTT.publish).toHaveBeenCalledWith("zigbee2mqtt/group_1", stringify({"state":"ON"}), {"retain": false, qos: 0}, expect.any(Function));
     });
 
@@ -467,6 +491,30 @@ describe('Groups', () => {
         await flushPromises();
         expect(MQTT.publish).toHaveBeenCalledTimes(1);
         expect(MQTT.publish).toHaveBeenCalledWith("zigbee2mqtt/bulb_color", stringify({state:"OFF"}), {"retain": false, qos: 0}, expect.any(Function));
+    });
+
+    it('Should publish state change off if any lights within are still on when changed via device when off_state: last_member_state is used', async () => {
+        const device_1 = zigbeeHerdsman.devices.bulb_color;
+        const device_2 = zigbeeHerdsman.devices.bulb;
+        const endpoint_1 = device_1.getEndpoint(1);
+        const endpoint_2 = device_2.getEndpoint(1);
+        const group = zigbeeHerdsman.groups.group_1;
+        group.members.push(endpoint_1);
+        group.members.push(endpoint_2);
+        settings.set(['groups'], {
+            '1': {friendly_name: 'group_1', devices: [device_1.ieeeAddr, device_2.ieeeAddr], retain: false, off_state: 'last_member_state'}
+        });
+        await resetExtension();
+
+        await MQTT.events.message('zigbee2mqtt/group_1/set', stringify({state: 'ON'}));
+        await flushPromises();
+        MQTT.publish.mockClear();
+
+        await MQTT.events.message('zigbee2mqtt/bulb_color/set', stringify({state: 'OFF'}));
+        await flushPromises();
+        expect(MQTT.publish).toHaveBeenCalledTimes(2);
+        expect(MQTT.publish).toHaveBeenNthCalledWith(1, "zigbee2mqtt/group_1", stringify({state:"OFF"}), {"retain": false, qos: 0}, expect.any(Function));
+        expect(MQTT.publish).toHaveBeenNthCalledWith(2, "zigbee2mqtt/bulb_color", stringify({state:"OFF"}), {"retain": false, qos: 0}, expect.any(Function));
     });
 
     it('Should not publish state change off if any lights within are still on when changed via shared group', async () => {
@@ -829,7 +877,7 @@ describe('Groups', () => {
         );
     });
 
-    it('Error when adding to non-existing device', async () => {
+    it('Error when adding a non-existing device', async () => {
         await resetExtension();
         logger.error.mockClear();
         MQTT.publish.mockClear();
@@ -839,6 +887,20 @@ describe('Groups', () => {
         expect(MQTT.publish).toHaveBeenCalledWith(
             'zigbee2mqtt/bridge/response/group/members/add',
             stringify({"data":{"device":"bulb_color_not_existing","group":"group_1"},"status":"error","error":"Device 'bulb_color_not_existing' does not exist"}),
+            {retain: false, qos: 0}, expect.any(Function)
+        );
+    });
+
+    it('Error when adding a non-existing endpoint', async () => {
+        await resetExtension();
+        logger.error.mockClear();
+        MQTT.publish.mockClear();
+        MQTT.events.message('zigbee2mqtt/bridge/request/group/members/add', stringify({group: 'group_1', device: 'bulb_color/not_existing_endpoint'}));
+        await flushPromises();
+        expect(MQTT.publish).not.toHaveBeenCalledWith('zigbee2mqtt/bridge/groups', expect.any(String), expect.any(Object), expect.any(Function));
+        expect(MQTT.publish).toHaveBeenCalledWith(
+            'zigbee2mqtt/bridge/response/group/members/add',
+            stringify({"data":{"device":"bulb_color/not_existing_endpoint","group":"group_1"},"status":"error","error":"Device 'bulb_color' does not have endpoint 'not_existing_endpoint'"}),
             {retain: false, qos: 0}, expect.any(Function)
         );
     });

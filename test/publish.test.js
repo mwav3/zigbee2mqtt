@@ -1,6 +1,8 @@
 const data = require('./stub/data');
+const sleep = require('./stub/sleep');
 const logger = require('./stub/logger');
 const zigbeeHerdsman = require('./stub/zigbeeHerdsman');
+const {loadTopicGetSetRegex} = require('../lib/extension/publish');
 const zigbeeHerdsmanConverters = require('zigbee-herdsman-converters');
 const stringify = require('json-stable-stringify-without-jsonify');
 const MQTT = require('./stub/mqtt');
@@ -8,7 +10,7 @@ const settings = require('../lib/util/settings');
 const Controller = require('../lib/controller');
 const flushPromises = require('./lib/flushPromises');
 
-const mocksClear = [MQTT.publish, logger.warn, logger.debug];
+const mocksClear = [MQTT.publish, logger.warning, logger.debug];
 
 const expectNothingPublished = () => {
     Object.values(zigbeeHerdsman.devices).forEach((d) => {
@@ -30,6 +32,7 @@ describe('Publish', () => {
         jest.useFakeTimers();
         data.writeEmptyState();
         controller = new Controller(jest.fn(), jest.fn());
+        sleep.mock();
         await controller.start();
         await flushPromises();
     });
@@ -38,6 +41,7 @@ describe('Publish', () => {
         data.writeDefaultConfiguration();
         controller.state.state = {};
         settings.reRead();
+        loadTopicGetSetRegex();
         mocksClear.forEach((m) => m.mockClear());
         Object.values(zigbeeHerdsman.devices).forEach((d) => {
             d.endpoints.forEach((e) => {
@@ -50,12 +54,13 @@ describe('Publish', () => {
             g.command.mockClear();
         });
 
-        zigbeeHerdsmanConverters.toZigbeeConverters.__clearStore__();
+        zigbeeHerdsmanConverters.toZigbee.__clearStore__();
     });
 
     afterAll(async () => {
         jest.runOnlyPendingTimers();
         jest.useRealTimers();
+        sleep.restore();
     });
 
     it('Should publish messages to zigbee devices', async () => {
@@ -71,12 +76,7 @@ describe('Publish', () => {
     });
 
     it('Should corretly handle mallformed messages', async () => {
-        await MQTT.events.message('zigbee2mqtt/foo', undefined);
-        await MQTT.events.message('zigbee2mqtt/foo', null);
         await MQTT.events.message('zigbee2mqtt/foo', "");
-
-        await MQTT.events.message('zigbee2mqtt/bulb_color/set', undefined);
-        await MQTT.events.message('zigbee2mqtt/bulb_color/set', null);
         await MQTT.events.message('zigbee2mqtt/bulb_color/set', "");
         await flushPromises();
         expectNothingPublished();
@@ -150,7 +150,7 @@ describe('Publish', () => {
     it('Should publish messages to zigbee devices with color_temp in %', async () => {
         const device = zigbeeHerdsman.devices.bulb_color;
         const endpoint = device.getEndpoint(1);
-        await MQTT.events.message('zigbee2mqtt/bulb_color/set', stringify({color_temp_percent: '100'}));
+        await MQTT.events.message('zigbee2mqtt/bulb_color/set', stringify({color_temp_percent: 100}));
         await flushPromises();
         expect(endpoint.command).toHaveBeenCalledTimes(1);
         expect(endpoint.command).toHaveBeenCalledWith("lightingColorCtrl", "moveToColorTemp", {colortemp: 500, transtime: 0}, {});
@@ -186,6 +186,17 @@ describe('Publish', () => {
         expect(MQTT.publish.mock.calls[1][2]).toStrictEqual({"qos": 0, "retain": false});
     });
 
+    it('Should publish messages to zigbee devices with endpoint ID', async () => {
+        const device = zigbeeHerdsman.devices.QBKG03LM;
+        const endpoint = device.getEndpoint(3);
+        await MQTT.events.message('zigbee2mqtt/wall_switch_double/3/set', stringify({state: 'OFF'}));
+        await flushPromises();
+        expect(endpoint.command).toHaveBeenCalledTimes(1);
+        expect(endpoint.command).toHaveBeenCalledWith("genOnOff", "off", {}, {});
+        expect(MQTT.publish).toHaveBeenCalledWith('zigbee2mqtt/wall_switch_double', stringify({state_right: 'OFF'}),
+            {"qos": 0, "retain": false}, expect.any(Function));
+    });
+
     it('Should publish messages to zigbee devices to non default-ep with state_[EP]', async () => {
         const device = zigbeeHerdsman.devices.QBKG03LM;
         const endpoint = device.getEndpoint(3);
@@ -209,6 +220,40 @@ describe('Publish', () => {
         expect(MQTT.publish).toHaveBeenCalledWith(
             'zigbee2mqtt/QS-Zigbee-D02-TRIAC-2C-LN',
             stringify({brightness_l2: 50, state_l2: 'ON'}),
+            { retain: false, qos: 0 },
+            expect.any(Function)
+        );
+    });
+
+    it('Should publish messages to TuYa switch with dummy endpoints', async () => {
+        const device = zigbeeHerdsman.devices.TS0601_switch;
+        const endpoint = device.getEndpoint(1);
+        await MQTT.events.message('zigbee2mqtt/TS0601_switch/set', stringify({state_l2: 'ON'}));
+        await flushPromises();
+        expect(endpoint.command).toHaveBeenCalledTimes(1);
+        expect(endpoint.command).toHaveBeenCalledWith("manuSpecificTuya", "dataRequest", {dpValues: [{data: [1], datatype: 1, dp: 2}], seq: expect.any(Number)}, {disableDefaultResponse: true});
+        expect(MQTT.publish).toHaveBeenCalledWith(
+            'zigbee2mqtt/TS0601_switch',
+            stringify({state_l2: 'ON'}),
+            { retain: false, qos: 0 },
+            expect.any(Function)
+        );
+    });
+
+    it('Should publish messages to TuYa cover switch with dummy endpoints', async () => {
+        const device = zigbeeHerdsman.devices.TS0601_cover_switch;
+        const endpoint = device.getEndpoint(1);
+        await MQTT.events.message('zigbee2mqtt/TS0601_cover_switch/set', stringify({state: 'OPEN'}));
+        await MQTT.events.message('zigbee2mqtt/TS0601_cover_switch/set', stringify({state_l1: 'ON'}));
+        await MQTT.events.message('zigbee2mqtt/TS0601_cover_switch/l2/set', stringify({state: 'OFF'}));
+        await flushPromises();
+        expect(endpoint.command).toHaveBeenCalledTimes(3);
+        expect(endpoint.command).toHaveBeenCalledWith("manuSpecificTuya", "dataRequest", {dpValues: [{data: [0], datatype: 4, dp: 1}], seq: expect.any(Number)}, {disableDefaultResponse: true});
+        expect(endpoint.command).toHaveBeenCalledWith("manuSpecificTuya", "dataRequest", {dpValues: [{data: [1], datatype: 1, dp: 102}], seq: expect.any(Number)}, {disableDefaultResponse: true});
+        expect(endpoint.command).toHaveBeenCalledWith("manuSpecificTuya", "dataRequest", {dpValues: [{data: [0], datatype: 1, dp: 101}], seq: expect.any(Number)}, {disableDefaultResponse: true});
+        expect(MQTT.publish).toHaveBeenCalledWith(
+            'zigbee2mqtt/TS0601_cover_switch',
+            stringify({state_l2: 'OFF', state_l1: 'ON', state: 'OPEN'}),
             { retain: false, qos: 0 },
             expect.any(Function)
         );
@@ -356,7 +401,7 @@ describe('Publish', () => {
         await MQTT.events.message('zigbee2mqtt/thermostat_group/set', stringify({child_lock: 'LOCK'}));
         await flushPromises();
         expect(group.command).toHaveBeenCalledTimes(1);
-        expect(group.command).toHaveBeenCalledWith("manuSpecificTuya", "setData", {data: [1], datatype: 1, dp: 7, length_hi: 0, length_lo: 1, status: 0, transid: expect.any(Number)}, {disableDefaultResponse: true});
+        expect(group.command).toHaveBeenCalledWith("manuSpecificTuya", "dataRequest", {dpValues: [{data: [1], datatype: 1, dp: 7}], seq: expect.any(Number)}, {disableDefaultResponse: true});
     });
 
     it('Should publish messages to groups with on and brightness', async () => {
@@ -496,6 +541,18 @@ describe('Publish', () => {
         expect(endpoint3.read).toHaveBeenCalledWith('genOnOff', ['onOff']);
     });
 
+    it('Should handle get with multiple cover endpoints', async () => {
+        const device = zigbeeHerdsman.devices.zigfred_plus;
+        const endpoint11 = device.getEndpoint(11);
+        const endpoint12 = device.getEndpoint(12);
+        await MQTT.events.message('zigbee2mqtt/zigfred_plus/get', stringify({state_l6: '', state_l7: ''}));
+        await flushPromises();
+        expect(endpoint11.read).toHaveBeenCalledTimes(1);
+        expect(endpoint11.read).toHaveBeenCalledWith('closuresWindowCovering', ['currentPositionLiftPercentage']);
+        expect(endpoint12.read).toHaveBeenCalledTimes(1);
+        expect(endpoint12.read).toHaveBeenCalledWith('closuresWindowCovering', ['currentPositionLiftPercentage']);
+    });
+
     it('Should log error when device has no such endpoint (via topic)', async () => {
         const device = zigbeeHerdsman.devices.QBKG03LM;
         const endpoint2 = device.getEndpoint(2);
@@ -513,7 +570,7 @@ describe('Publish', () => {
         logger.error.mockClear();
         await MQTT.events.message('zigbee2mqtt/0x0017880104e45542/get', stringify({state_center: '', state_right: ''}));
         await flushPromises();
-        expect(logger.error).toHaveBeenCalledWith(`Device 'wall_switch_double' has no endpoint 'center'`);
+        expect(logger.error).toHaveBeenCalledWith(`No converter available for 'state_center' ("")`);
         expect(endpoint2.read).toHaveBeenCalledTimes(0);
         expect(endpoint3.read).toHaveBeenCalledTimes(1);
         expect(endpoint3.read).toHaveBeenCalledWith('genOnOff', ['onOff']);
@@ -539,6 +596,7 @@ describe('Publish', () => {
 
     it('Should parse topic with when base topic has multiple slashes', async () => {
         settings.set(['mqtt', 'base_topic'], 'zigbee2mqtt/at/my/home');
+        loadTopicGetSetRegex();
         const device = zigbeeHerdsman.devices.bulb_color;
         const endpoint = device.getEndpoint(1);
         await MQTT.events.message('zigbee2mqtt/at/my/home/bulb_color/get', stringify({state: ''}));
@@ -559,6 +617,7 @@ describe('Publish', () => {
 
     it('Should parse topic with when base and deviceID have multiple slashes', async () => {
         settings.set(['mqtt', 'base_topic'], 'zigbee2mqtt/at/my/basement');
+        loadTopicGetSetRegex();
         const device = zigbeeHerdsman.devices.bulb_color;
         settings.set(['devices', device.ieeeAddr, 'friendly_name'], 'floor0/basement/my_device_id2');
         const endpoint = device.getEndpoint(1);
@@ -657,6 +716,7 @@ describe('Publish', () => {
 
     it('Should parse set with and slashes in base and deviceID postfix topic', async () => {
         settings.set(['mqtt', 'base_topic'], 'zigbee2mqtt/at/my/home')
+        loadTopicGetSetRegex();
         const device = zigbeeHerdsman.devices.QBKG03LM;
         settings.set(['devices', device.ieeeAddr, 'friendly_name'], 'in/basement/wall_switch_double');
         const endpoint = device.getEndpoint(2);
@@ -908,11 +968,11 @@ describe('Publish', () => {
         expect(endpoint.command).toHaveBeenCalledTimes(3);
         expect(endpoint.command.mock.calls[0]).toEqual(["genLevelCtrl", "moveToLevelWithOnOff", {level: 50, transtime: 0}, {}]);
         expect(endpoint.command.mock.calls[1]).toEqual(["genLevelCtrl", "moveToLevelWithOnOff", {level: 0, transtime: 0}, {}]);
-        expect(endpoint.command.mock.calls[2]).toEqual(["genOnOff", "on", {}, {}]);
+        expect(endpoint.command.mock.calls[2]).toEqual(["genLevelCtrl", "moveToLevelWithOnOff", {level: 50, transtime: 0}, {}]);
         expect(MQTT.publish).toHaveBeenCalledTimes(3);
         expect(MQTT.publish.mock.calls[0]).toEqual(["zigbee2mqtt/bulb_color", stringify({state: 'ON', brightness: 50}), {"qos": 0, "retain": false}, expect.any(Function)]);
         expect(MQTT.publish.mock.calls[1]).toEqual(["zigbee2mqtt/bulb_color", stringify({state: 'OFF', brightness: 0}), {"qos": 0, "retain": false}, expect.any(Function)]);
-        expect(MQTT.publish.mock.calls[2]).toEqual(["zigbee2mqtt/bulb_color", stringify({state: 'ON', brightness: 1}), {"qos": 0, "retain": false}, expect.any(Function)]);
+        expect(MQTT.publish.mock.calls[2]).toEqual(["zigbee2mqtt/bulb_color", stringify({state: 'ON', brightness: 50}), {"qos": 0, "retain": false}, expect.any(Function)]);
     });
 
     it('Should turn device off when brightness 0 is send with transition', async () => {
@@ -927,11 +987,11 @@ describe('Publish', () => {
         expect(endpoint.command).toHaveBeenCalledTimes(3);
         expect(endpoint.command.mock.calls[0]).toEqual(["genLevelCtrl", "moveToLevelWithOnOff", {level: 50, transtime: 0}, {}]);
         expect(endpoint.command.mock.calls[1]).toEqual(["genLevelCtrl", "moveToLevelWithOnOff", {level: 0, transtime: 30}, {}]);
-        expect(endpoint.command.mock.calls[2]).toEqual(["genOnOff", "on", {}, {}]);
+        expect(endpoint.command.mock.calls[2]).toEqual(["genLevelCtrl", "moveToLevelWithOnOff", {level: 50, transtime: 0}, {}]);
         expect(MQTT.publish).toHaveBeenCalledTimes(3);
         expect(MQTT.publish.mock.calls[0]).toEqual(["zigbee2mqtt/bulb_color", stringify({state: 'ON', brightness: 50}), {"qos": 0, "retain": false}, expect.any(Function)]);
         expect(MQTT.publish.mock.calls[1]).toEqual(["zigbee2mqtt/bulb_color", stringify({state: 'OFF', brightness: 0}), {"qos": 0, "retain": false}, expect.any(Function)]);
-        expect(MQTT.publish.mock.calls[2]).toEqual(["zigbee2mqtt/bulb_color", stringify({state: 'ON', brightness: 1}), {"qos": 0, "retain": false}, expect.any(Function)]);
+        expect(MQTT.publish.mock.calls[2]).toEqual(["zigbee2mqtt/bulb_color", stringify({state: 'ON', brightness: 50}), {"qos": 0, "retain": false}, expect.any(Function)]);
     });
 
     it('Should allow to set color via hue and saturation', async () => {
@@ -941,7 +1001,7 @@ describe('Publish', () => {
         await MQTT.events.message('zigbee2mqtt/bulb_color/set', stringify(payload));
         await flushPromises();
         expect(endpoint.command).toHaveBeenCalledTimes(1);
-        expect(endpoint.command.mock.calls[0]).toEqual(["lightingColorCtrl", "enhancedMoveToHueAndSaturation", {"direction": 0, "enhancehue": 44877, "saturation": 200, "transtime": 0,}, {}]);
+        expect(endpoint.command.mock.calls[0]).toEqual(["lightingColorCtrl", "enhancedMoveToHueAndSaturation", {"direction": 0, "enhancehue": 45510, "saturation": 127, "transtime": 0,}, {}]);
         expect(MQTT.publish).toHaveBeenCalledTimes(1);
         expect(MQTT.publish.mock.calls[0][0]).toStrictEqual('zigbee2mqtt/bulb_color');
         expect(JSON.parse(MQTT.publish.mock.calls[0][1])).toStrictEqual({"color":{"hue":250,"saturation":50}, "color_mode": "hs"});
@@ -954,7 +1014,7 @@ describe('Publish', () => {
         await MQTT.events.message('zigbee2mqtt/curtain/set', stringify(payload));
         await flushPromises();
         expect(endpoint.write).toHaveBeenCalledTimes(1);
-        expect(endpoint.write).toHaveBeenCalledWith("genAnalogOutput", {"85": {"type": 57, "value": 100}});
+        expect(endpoint.write).toHaveBeenCalledWith("genAnalogOutput", {presentValue: 100});
     });
 
     it('ZNCLDJ11LM position', async () => {
@@ -964,7 +1024,7 @@ describe('Publish', () => {
         await MQTT.events.message('zigbee2mqtt/curtain/set', stringify(payload));
         await flushPromises();
         expect(endpoint.write).toHaveBeenCalledTimes(1);
-        expect(endpoint.write).toHaveBeenCalledWith("genAnalogOutput", {"85": {"type": 57, "value": 10}});
+        expect(endpoint.write).toHaveBeenCalledWith("genAnalogOutput", {presentValue: 10});
     });
 
     it('ZNCLDJ11LM position', async () => {
@@ -974,7 +1034,7 @@ describe('Publish', () => {
         await MQTT.events.message('zigbee2mqtt/curtain/set', stringify(payload));
         await flushPromises();
         expect(endpoint.write).toHaveBeenCalledTimes(1);
-        expect(endpoint.write).toHaveBeenCalledWith("genAnalogOutput", {"85": {"type": 57, "value": 0}});
+        expect(endpoint.write).toHaveBeenCalledWith("genAnalogOutput", {presentValue: 0});
     });
 
     it('ZNCLDJ11LM position', async () => {
@@ -1094,10 +1154,10 @@ describe('Publish', () => {
 
     it('Home Assistant: should not set state when color temperature is also set and device is already on', async () => {
         settings.set(['homeassistant'], true);
-        const device = zigbeeHerdsman.devices.bulb_color;
-        controller.state.remove(device.ieeeAddr);
-        controller.state.set(device.ieeeAddr, {state: 'ON'})
-        const endpoint = device.getEndpoint(1);
+        const device = controller.zigbee.resolveEntity(zigbeeHerdsman.devices.bulb_color.ieeeAddr);
+        controller.state.remove(device);
+        controller.state.set(device, {state: 'ON'})
+        const endpoint = device.zh.getEndpoint(1);
         const payload = {state: 'ON', color_temp: 100};
         await MQTT.events.message('zigbee2mqtt/bulb_color/set', stringify(payload));
         await flushPromises();
@@ -1110,10 +1170,10 @@ describe('Publish', () => {
 
     it('Home Assistant: should set state when color temperature is also set and device is off', async () => {
         settings.set(['homeassistant'], true);
-        const device = zigbeeHerdsman.devices.bulb_color;
-        controller.state.remove(device.ieeeAddr);
-        controller.state.set(device.ieeeAddr, {state: 'OFF'})
-        const endpoint = device.getEndpoint(1);
+        const device = controller.zigbee.resolveEntity(zigbeeHerdsman.devices.bulb_color.ieeeAddr);
+        controller.state.remove(device);
+        controller.state.set(device, {state: 'OFF'})
+        const endpoint = device.zh.getEndpoint(1);
         const payload = {state: 'ON', color_temp: 100};
         await MQTT.events.message('zigbee2mqtt/bulb_color/set', stringify(payload));
         await flushPromises();
@@ -1131,10 +1191,10 @@ describe('Publish', () => {
 
     it('Home Assistant: should not set state when color is also set', async () => {
         settings.set(['homeassistant'], true);
-        const device = zigbeeHerdsman.devices.bulb_color;
-        controller.state.remove(device.ieeeAddr);
-        controller.state.set(device.ieeeAddr, {state: 'ON'})
-        const endpoint = device.getEndpoint(1);
+        const device = controller.zigbee.resolveEntity(zigbeeHerdsman.devices.bulb_color.ieeeAddr);
+        controller.state.remove(device);
+        controller.state.set(device, {state: 'ON'})
+        const endpoint = device.zh.getEndpoint(1);
         const payload = {state: 'ON', color: {x: 0.41, y: 0.25}};
         await MQTT.events.message('zigbee2mqtt/bulb_color/set', stringify(payload));
         await flushPromises();
@@ -1258,7 +1318,7 @@ describe('Publish', () => {
         expect(endpoint.command).toHaveBeenCalledWith("ssIasWd", "startWarning", {"startwarninginfo": 53, "warningduration": 10, "strobedutycycle": 0, "strobelevel": 1}, {disableDefaultResponse: true});
     });
 
-    it('Shouldnt do anythign when device is not supported', async () => {
+    it('Shouldnt do anything when device is not supported', async () => {
         const payload = {state: 'ON'};
         await MQTT.events.message('zigbee2mqtt/unsupported2/set', stringify(payload));
         await flushPromises();
@@ -1283,7 +1343,7 @@ describe('Publish', () => {
         await MQTT.events.message('zigbee2mqtt/MKS-CM-W5/l3/set', stringify({state: 'ON'}));
         await flushPromises();
         expect(endpoint.command).toHaveBeenCalledTimes(1);
-        expect(endpoint.command).toHaveBeenCalledWith("manuSpecificTuya", "setData", {data: [1], datatype: 1, dp: 3, length_hi: 0, length_lo: 1, status: 0, transid: expect.any(Number)}, {disableDefaultResponse: true});
+        expect(endpoint.command).toHaveBeenCalledWith("manuSpecificTuya", "dataRequest", {dpValues: [{data: [1], datatype: 1, dp: 3}], seq: expect.any(Number)}, {disableDefaultResponse: true});
         expect(MQTT.publish).toHaveBeenCalledTimes(1);
         expect(MQTT.publish.mock.calls[0][0]).toStrictEqual('zigbee2mqtt/MKS-CM-W5');
         expect(JSON.parse(MQTT.publish.mock.calls[0][1])).toStrictEqual({state_l3: 'ON'});
@@ -1325,7 +1385,7 @@ describe('Publish', () => {
         await MQTT.events.message('zigbee2mqtt/bulb_color/set', stringify({state: 'ON', brightness: 20, transition: 0.0}));
         await flushPromises();
 
-        zigbeeHerdsmanConverters.toZigbeeConverters.__clearStore__();
+        zigbeeHerdsmanConverters.toZigbee.__clearStore__();
 
         await MQTT.events.message('zigbee2mqtt/bulb_color/set', stringify({"state": "ON", "transition": 1.0}));
         await flushPromises();
@@ -1401,6 +1461,8 @@ describe('Publish', () => {
         await flushPromises();
         expect(group.command).toHaveBeenCalledTimes(1);
         expect(group.command).toHaveBeenCalledWith('genScenes', 'store', { groupid: 15071, sceneid: 1 }, {});
+        expect(MQTT.publish).toHaveBeenCalledWith('zigbee2mqtt/bridge/devices', expect.any(String), {retain: true, qos: 0}, expect.any(Function));
+        expect(MQTT.publish).toHaveBeenCalledWith('zigbee2mqtt/bridge/groups', expect.any(String), {retain: true, qos: 0}, expect.any(Function));
 
         await MQTT.events.message('zigbee2mqtt/bulb_color_2/set', stringify({"state": "ON", "brightness": 250, "color_temp": 20}));
         await MQTT.events.message('zigbee2mqtt/bulb_2/set', stringify({"state": "ON", "brightness": 110}));
@@ -1478,5 +1540,11 @@ describe('Publish', () => {
             stringify({"color":{"x":0.4152,"y":0.3954},"color_mode":"color_temp","color_temp":300}),
             {retain: false, qos: 0}, expect.any(Function)
         );
+    });
+
+    it('Log an error when entity is not found', async () => {
+        await MQTT.events.message('zigbee2mqtt/an_unknown_entity/set', stringify({}));
+        await flushPromises();
+        expect(logger.error).toHaveBeenCalledWith("Entity 'an_unknown_entity' is unknown");
     });
 });

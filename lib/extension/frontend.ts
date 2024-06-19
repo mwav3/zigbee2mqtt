@@ -1,67 +1,102 @@
 import http from 'http';
-import serveStatic from 'serve-static';
+import https from 'https';
+import gzipStatic, {RequestHandler} from 'connect-gzip-static';
 import finalhandler from 'finalhandler';
 import logger from '../util/logger';
-// @ts-ignore
 import frontend from 'zigbee2mqtt-frontend';
 import WebSocket from 'ws';
 import net from 'net';
 import url from 'url';
+import fs from 'fs';
 import * as settings from '../util/settings';
-import * as utils from '../util/utils';
-// @ts-ignore
+import utils from '../util/utils';
 import stringify from 'json-stable-stringify-without-jsonify';
-import ExtensionTS from './extensionts';
+import Extension from './extension';
 import bind from 'bind-decorator';
 
 /**
  * This extension servers the frontend
  */
-class Frontend extends ExtensionTS {
+export default class Frontend extends Extension {
     private mqttBaseTopic = settings.get().mqtt.base_topic;
-    private host = settings.get().frontend.host || '0.0.0.0';
-    private port = settings.get().frontend.port || 8080;
-    private authToken = settings.get().frontend.auth_token || false;
+    private host = settings.get().frontend.host;
+    private port = settings.get().frontend.port;
+    private sslCert = settings.get().frontend.ssl_cert;
+    private sslKey = settings.get().frontend.ssl_key;
+    private authToken = settings.get().frontend.auth_token;
     private retainedMessages = new Map();
     private server: http.Server;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    private fileServer: serveStatic.RequestHandler<any>;
+    private fileServer: RequestHandler;
     private wss: WebSocket.Server = null;
 
-    constructor(zigbee: Zigbee, mqtt: MQTT, state: TempState, publishEntityState: PublishEntityState,
+    constructor(zigbee: Zigbee, mqtt: MQTT, state: State, publishEntityState: PublishEntityState,
         eventBus: EventBus, enableDisableExtension: (enable: boolean, name: string) => Promise<void>,
-        restartCallback: () => void, addExtension: (extension: ExternalConverterClass) => void) {
+        restartCallback: () => void, addExtension: (extension: Extension) => Promise<void>) {
         super(zigbee, mqtt, state, publishEntityState, eventBus, enableDisableExtension, restartCallback, addExtension);
         this.eventBus.onMQTTMessagePublished(this, this.onMQTTPublishMessage);
     }
 
+    private isHttpsConfigured():boolean {
+        if (this.sslCert && this.sslKey) {
+            if (!fs.existsSync(this.sslCert) || !fs.existsSync(this.sslKey)) {
+                logger.error(`defined ssl_cert '${this.sslCert}' or ssl_key '${this.sslKey}' file path does not exists, server won't be secured.`); /* eslint-disable-line max-len */
+                return false;
+            }
+            return true;
+        }
+        return false;
+    }
+
+
     override async start(): Promise<void> {
-        this.server = http.createServer(this.onRequest);
+        if (this.isHttpsConfigured()) {
+            const serverOptions = {
+                key: fs.readFileSync(this.sslKey),
+                cert: fs.readFileSync(this.sslCert)};
+            this.server = https.createServer(serverOptions, this.onRequest);
+        } else {
+            this.server = http.createServer(this.onRequest);
+        }
+
         this.server.on('upgrade', this.onUpgrade);
 
-        /* istanbul ignore next */ // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const options = {setHeaders: (res: any, path: any): void => {
-            if (path.endsWith('index.html')) {
-                res.setHeader('Cache-Control', 'no-store');
-            }
-        }};
-
-        this.fileServer = serveStatic(frontend.getPath(), options);
+        /* istanbul ignore next */
+        const options = {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            setHeaders: (res: any, path: string): void => {
+                if (path.endsWith('index.html')) {
+                    res.setHeader('Cache-Control', 'no-store');
+                }
+            },
+        };
+        this.fileServer = gzipStatic(frontend.getPath(), options);
         this.wss = new WebSocket.Server({noServer: true});
         this.wss.on('connection', this.onWebSocketConnection);
 
-        this.server.listen(this.port, this.host);
-        logger.info(`Started frontend on port ${this.host}:${this.port}`);
+        if (!this.host) {
+            this.server.listen(this.port);
+            logger.info(`Started frontend on port ${this.port}`);
+        } else if (this.host.startsWith('/')) {
+            this.server.listen(this.host);
+            logger.info(`Started frontend on socket ${this.host}`);
+        } else {
+            this.server.listen(this.port, this.host);
+            logger.info(`Started frontend on port ${this.host}:${this.port}`);
+        }
     }
 
     override async stop(): Promise<void> {
         super.stop();
-        for (const client of this.wss.clients) {
+        this.wss?.clients.forEach((client) => {
             client.send(stringify({topic: 'bridge/state', payload: 'offline'}));
             client.terminate();
+        });
+        this.wss?.close();
+        /* istanbul ignore else */
+        if (this.server) {
+            return new Promise((cb: () => void) => this.server.close(cb));
         }
-        this.wss.close();
-        return new Promise((cb: () => void) => this.server.close(cb));
     }
 
     @bind private onRequest(request: http.IncomingMessage, response: http.ServerResponse): void {
@@ -76,8 +111,8 @@ class Frontend extends ExtensionTS {
 
     @bind private onUpgrade(request: http.IncomingMessage, socket: net.Socket, head: Buffer): void {
         this.wss.handleUpgrade(request, socket, head, (ws) => {
-            this.authenticate(request, (isAuthentificated) => {
-                if (isAuthentificated) {
+            this.authenticate(request, (isAuthenticated) => {
+                if (isAuthenticated) {
                     this.wss.emit('connection', ws, request);
                 } else {
                     ws.close(4401, 'Unauthorized');
@@ -87,11 +122,12 @@ class Frontend extends ExtensionTS {
     }
 
     @bind private onWebSocketConnection(ws: WebSocket): void {
+        ws.on('error', (msg) => logger.error(`WebSocket error: ${msg.message}`));
         ws.on('message', (data: Buffer, isBinary: boolean) => {
             if (!isBinary && data) {
                 const message = data.toString();
                 const {topic, payload} = JSON.parse(message);
-                this.mqtt.onMessage(`${this.mqttBaseTopic}/${topic}`, stringify(payload));
+                this.mqtt.onMessage(`${this.mqttBaseTopic}/${topic}`, Buffer.from(stringify(payload)));
             }
         });
 
@@ -99,27 +135,24 @@ class Frontend extends ExtensionTS {
             ws.send(stringify({topic: key, payload: value}));
         }
 
-        for (const device of this.zigbee.getClients()) {
-            let payload: KeyValue = {};
-            if (this.state.exists(device.ieeeAddr)) {
-                payload = {...payload, ...this.state.get(device.ieeeAddr)};
-            }
-
+        for (const device of this.zigbee.devices(false)) {
+            const payload = this.state.get(device);
             const lastSeen = settings.get().advanced.last_seen;
             /* istanbul ignore if */
             if (lastSeen !== 'disable') {
-                payload.last_seen = utils.formatDate(device.lastSeen, lastSeen);
+                payload.last_seen = utils.formatDate(device.zh.lastSeen, lastSeen);
             }
 
-            if (device.zhDevice.linkquality !== undefined) {
-                payload.linkquality = device.zhDevice.linkquality;
+            if (device.zh.linkquality !== undefined) {
+                payload.linkquality = device.zh.linkquality;
             }
 
             ws.send(stringify({topic: device.name, payload}));
         }
     }
 
-    @bind private onMQTTPublishMessage(data: EventMQTTMessagePublished): void {
+    @bind private onMQTTPublishMessage(data: eventdata.MQTTMessagePublished): void {
+        /* istanbul ignore else */
         if (data.topic.startsWith(`${this.mqttBaseTopic}/`)) {
             // Send topic without base_topic
             const topic = data.topic.substring(this.mqttBaseTopic.length + 1);
@@ -139,5 +172,3 @@ class Frontend extends ExtensionTS {
         }
     }
 }
-
-module.exports = Frontend;

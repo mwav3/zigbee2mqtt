@@ -16,7 +16,7 @@ describe('Bridge legacy', () => {
 
     beforeAll(async () => {
         jest.useFakeTimers();
-        version = await require('../../lib/util/utils').getZigbee2MQTTVersion();
+        version = await require('../../lib/util/utils').default.getZigbee2MQTTVersion();
         controller = new Controller(jest.fn(), jest.fn());
         await controller.start();
     })
@@ -25,7 +25,7 @@ describe('Bridge legacy', () => {
         data.writeDefaultConfiguration();
         settings.reRead();
         logger.info.mockClear();
-        logger.warn.mockClear();
+        logger.warning.mockClear();
     });
 
     afterAll(async () => {
@@ -56,7 +56,7 @@ describe('Bridge legacy', () => {
     it('Should allow whitelist', async () => {
         const bulb_color = zigbeeHerdsman.devices.bulb_color;
         const bulb = zigbeeHerdsman.devices.bulb;
-        expect(settings.get().whitelist).toStrictEqual([]);
+        expect(settings.get().passlist).toStrictEqual([]);
         MQTT.publish.mockClear();
         MQTT.events.message('zigbee2mqtt/bridge/config/whitelist', 'bulb_color');
         await flushPromises();
@@ -68,7 +68,7 @@ describe('Bridge legacy', () => {
         );
 
         MQTT.publish.mockClear()
-        expect(settings.get().whitelist).toStrictEqual([bulb_color.ieeeAddr]);
+        expect(settings.get().passlist).toStrictEqual([bulb_color.ieeeAddr]);
         MQTT.events.message('zigbee2mqtt/bridge/config/whitelist', 'bulb');
         await flushPromises();
         expect(MQTT.publish).toHaveBeenCalledWith(
@@ -79,47 +79,47 @@ describe('Bridge legacy', () => {
         );
 
         MQTT.publish.mockClear()
-        expect(settings.get().whitelist).toStrictEqual([bulb_color.ieeeAddr, bulb.ieeeAddr]);
+        expect(settings.get().passlist).toStrictEqual([bulb_color.ieeeAddr, bulb.ieeeAddr]);
         MQTT.events.message('zigbee2mqtt/bridge/config/whitelist', 'bulb');
         await flushPromises();
-        expect(settings.get().whitelist).toStrictEqual([bulb_color.ieeeAddr, bulb.ieeeAddr]);
+        expect(settings.get().passlist).toStrictEqual([bulb_color.ieeeAddr, bulb.ieeeAddr]);
         expect(MQTT.publish).toHaveBeenCalledTimes(0);
     });
 
     it('Should allow changing device options', async () => {
         const bulb_color = zigbeeHerdsman.devices.bulb_color;
         expect(settings.getDevice('bulb_color')).toStrictEqual(
-            {"ID": "0x000b57fffec6a5b3", "friendlyName": "bulb_color", "friendly_name": "bulb_color", "retain": false}
+            {"ID": "0x000b57fffec6a5b3", "friendly_name": "bulb_color", "retain": false}
         );
         MQTT.events.message('zigbee2mqtt/bridge/config/device_options', stringify({friendly_name: 'bulb_color', options: {retain: true}}));
         await flushPromises();
         expect(settings.getDevice('bulb_color')).toStrictEqual(
-            {"ID": "0x000b57fffec6a5b3", "friendlyName": "bulb_color", "friendly_name": "bulb_color", "retain": true}
+            {"ID": "0x000b57fffec6a5b3", "friendly_name": "bulb_color", "retain": true}
         );
         MQTT.events.message('zigbee2mqtt/bridge/config/device_options', stringify({friendly_name: 'bulb_color', optionswrong: {retain: true}}));
         await flushPromises();
         expect(settings.getDevice('bulb_color')).toStrictEqual(
-            {"ID": "0x000b57fffec6a5b3", "friendlyName": "bulb_color", "friendly_name": "bulb_color", "retain": true}
+            {"ID": "0x000b57fffec6a5b3", "friendly_name": "bulb_color", "retain": true}
         );
         MQTT.events.message('zigbee2mqtt/bridge/config/device_options', "{friendly_name: 'bulb_color'malformed: {retain: true}}");
         await flushPromises();
         expect(settings.getDevice('bulb_color')).toStrictEqual(
-            {"ID": "0x000b57fffec6a5b3", "friendlyName": "bulb_color", "friendly_name": "bulb_color", "retain": true}
+            {"ID": "0x000b57fffec6a5b3", "friendly_name": "bulb_color", "retain": true}
         );
         MQTT.events.message('zigbee2mqtt/bridge/config/device_options', stringify({friendly_name: 'bulb_color', options: {random_setting: true}}));
         await flushPromises();
         expect(settings.getDevice('bulb_color')).toStrictEqual(
-            {"ID": "0x000b57fffec6a5b3", "friendlyName": "bulb_color", "friendly_name": "bulb_color", "random_setting": true, "retain": true}
+            {"ID": "0x000b57fffec6a5b3", "friendly_name": "bulb_color", "random_setting": true, "retain": true}
         );
         MQTT.events.message('zigbee2mqtt/bridge/config/device_options', stringify({friendly_name: 'bulb_color', options: {options: {random_1: true}}}));
         await flushPromises();
         expect(settings.getDevice('bulb_color')).toStrictEqual(
-            {"ID": "0x000b57fffec6a5b3", "friendlyName": "bulb_color", "friendly_name": "bulb_color", "random_setting": true, "retain": true, options: {random_1: true}}
+            {"ID": "0x000b57fffec6a5b3", "friendly_name": "bulb_color", "random_setting": true, "retain": true, options: {random_1: true}}
         );
         MQTT.events.message('zigbee2mqtt/bridge/config/device_options', stringify({friendly_name: 'bulb_color', options: {options: {random_2: false}}}));
         await flushPromises();
         expect(settings.getDevice('bulb_color')).toStrictEqual(
-            {"ID": "0x000b57fffec6a5b3", "friendlyName": "bulb_color", "friendly_name": "bulb_color", "random_setting": true, "retain": true, options: {random_1: true, random_2: false}}
+            {"ID": "0x000b57fffec6a5b3", "friendly_name": "bulb_color", "random_setting": true, "retain": true, options: {random_1: true, random_2: false}}
         );
     });
 
@@ -183,7 +183,7 @@ describe('Bridge legacy', () => {
         const payload = JSON.parse(MQTT.publish.mock.calls[0][1]);
         expect(payload.length).toStrictEqual(Object.values(zigbeeHerdsman.devices).length);
         expect(payload[1]).toStrictEqual({"ieeeAddr": "0x00124b00120144ae", "type": "Coordinator", "dateCode": "20190425", "friendly_name": "Coordinator", networkAddress: 0, softwareBuildID: "z-Stack", lastSeen: 100});
-        expect(payload[2]).toStrictEqual({"dateCode": null, "friendly_name": "bulb", "ieeeAddr": "0x000b57fffec6a5b2", "lastSeen": 1000, "manufacturerID": 4476, "model": "LED1545G12", "modelID": "TRADFRI bulb E27 WS opal 980lm", "networkAddress": 40369, "powerSource": "Mains (single phase)", "softwareBuildID": null, "type": "Router", "description": "TRADFRI LED bulb E26/E27 980 lumen, dimmable, white spectrum, opal white", "vendor": "IKEA"});
+        expect(payload[2]).toStrictEqual({"dateCode": null, "friendly_name": "bulb", "ieeeAddr": "0x000b57fffec6a5b2", "lastSeen": 1000, "manufacturerID": 4476, "model": "LED1545G12", "modelID": "TRADFRI bulb E27 WS opal 980lm", "networkAddress": 40369, "powerSource": "Mains (single phase)", "softwareBuildID": null, "type": "Router", "description": "TRADFRI bulb E26/E27, white spectrum, globe, opal, 980 lm", "vendor": "IKEA"});
         Date.now = now;
     });
 
@@ -197,9 +197,9 @@ describe('Bridge legacy', () => {
     });
 
     it('Should allow rename devices', async () => {
-        const bulb_color2 = {"ID": "0x000b57fffec6a5b3", "friendlyName": "bulb_color2", "friendly_name": "bulb_color2", "retain": false};
+        const bulb_color2 = {"ID": "0x000b57fffec6a5b3", "friendly_name": "bulb_color2", "retain": false};
         MQTT.publish.mockClear();
-        expect(settings.getDevice('bulb_color')).toStrictEqual({"ID": "0x000b57fffec6a5b3", "friendlyName": "bulb_color", "friendly_name": "bulb_color", "retain": false});
+        expect(settings.getDevice('bulb_color')).toStrictEqual({"ID": "0x000b57fffec6a5b3", "friendly_name": "bulb_color", "retain": false});
         MQTT.events.message('zigbee2mqtt/bridge/config/rename', stringify({old: 'bulb_color', new: 'bulb_color2'}));
         await flushPromises();
         expect(settings.getDevice('bulb_color')).toStrictEqual(null);
@@ -226,10 +226,10 @@ describe('Bridge legacy', () => {
 
     it('Should allow rename groups', async () => {
         MQTT.publish.mockClear();
-        expect(settings.getGroup(1)).toStrictEqual({"ID": 1, devices: [], friendlyName: "group_1", "friendly_name": "group_1", retain: false});
+        expect(settings.getGroup(1)).toStrictEqual({"ID": 1, devices: [], "friendly_name": "group_1", retain: false});
         MQTT.events.message('zigbee2mqtt/bridge/config/rename', stringify({old: 'group_1', new: 'group_1_renamed'}));
         await flushPromises();
-        expect(settings.getGroup(1)).toStrictEqual({"ID": 1, devices: [], friendlyName: "group_1_renamed", "friendly_name": "group_1_renamed", retain: false});
+        expect(settings.getGroup(1)).toStrictEqual({"ID": 1, devices: [], "friendly_name": "group_1_renamed", retain: false});
         expect(MQTT.publish).toHaveBeenCalledWith(
             'zigbee2mqtt/bridge/log',
             stringify({type: 'group_renamed', message: {from: 'group_1', to: 'group_1_renamed'}}),
@@ -243,10 +243,10 @@ describe('Bridge legacy', () => {
         const payload = {device};
         await zigbeeHerdsman.events.deviceJoined(payload);
         await flushPromises();
-        expect(settings.getDevice('0x000b57fffec6a5b2').friendlyName).toStrictEqual('bulb');
+        expect(settings.getDevice('0x000b57fffec6a5b2').friendly_name).toStrictEqual('bulb');
         MQTT.events.message('zigbee2mqtt/bridge/config/rename_last', 'bulb_new_name');
         await flushPromises();
-        expect(settings.getDevice('0x000b57fffec6a5b2').friendlyName).toStrictEqual('bulb_new_name');
+        expect(settings.getDevice('0x000b57fffec6a5b2').friendly_name).toStrictEqual('bulb_new_name');
         expect(MQTT.publish).toHaveBeenCalledWith(
             'zigbee2mqtt/bridge/log',
             stringify({type: 'device_renamed', message: {from: 'bulb', to: 'bulb_new_name'}}),
@@ -259,10 +259,10 @@ describe('Bridge legacy', () => {
         controller = new Controller(jest.fn(), jest.fn());
         await controller.start();
         await flushPromises();
-        expect(settings.getDevice('0x000b57fffec6a5b2').friendlyName).toStrictEqual('bulb');
+        expect(settings.getDevice('0x000b57fffec6a5b2').friendly_name).toStrictEqual('bulb');
         MQTT.events.message('zigbee2mqtt/bridge/config/rename_last', 'bulb_new_name');
         await flushPromises();
-        expect(settings.getDevice('0x000b57fffec6a5b2').friendlyName).toStrictEqual('bulb');
+        expect(settings.getDevice('0x000b57fffec6a5b2').friendly_name).toStrictEqual('bulb');
     });
 
     it('Should allow to add groups', async () => {
@@ -275,7 +275,7 @@ describe('Bridge legacy', () => {
             {qos: 0, retain: false},
             expect.any(Function)
         );
-        expect(settings.getGroup('new_group')).toStrictEqual({"ID": 3, "friendlyName": "new_group", "friendly_name": "new_group", devices: []});
+        expect(settings.getGroup('new_group')).toStrictEqual({"ID": 3, "friendly_name": "new_group", devices: []});
         expect(zigbeeHerdsman.createGroup).toHaveBeenCalledTimes(1);
         expect(zigbeeHerdsman.createGroup).toHaveBeenCalledWith(3);
     });
@@ -284,7 +284,7 @@ describe('Bridge legacy', () => {
         zigbeeHerdsman.createGroup.mockClear();
         MQTT.events.message('zigbee2mqtt/bridge/config/add_group', '{"friendly_name": "new_group"}');
         await flushPromises();
-        expect(settings.getGroup('new_group')).toStrictEqual({"ID": 3, "friendlyName": "new_group", "friendly_name": "new_group", devices: []});
+        expect(settings.getGroup('new_group')).toStrictEqual({"ID": 3, "friendly_name": "new_group", devices: []});
         expect(zigbeeHerdsman.createGroup).toHaveBeenCalledTimes(1);
         expect(zigbeeHerdsman.createGroup).toHaveBeenCalledWith(3);
         expect(MQTT.publish).toHaveBeenCalledWith(
@@ -299,7 +299,7 @@ describe('Bridge legacy', () => {
         zigbeeHerdsman.createGroup.mockClear();
         MQTT.events.message('zigbee2mqtt/bridge/config/add_group', '{"friendly_name": "new_group", "id": 42}');
         await flushPromises();
-        expect(settings.getGroup('new_group')).toStrictEqual({"ID": 42, "friendlyName": "new_group", "friendly_name": "new_group", devices: []});
+        expect(settings.getGroup('new_group')).toStrictEqual({"ID": 42, "friendly_name": "new_group", devices: []});
         expect(zigbeeHerdsman.createGroup).toHaveBeenCalledTimes(1);
         expect(zigbeeHerdsman.createGroup).toHaveBeenCalledWith(42);
         expect(MQTT.publish).toHaveBeenCalledWith(
@@ -314,7 +314,7 @@ describe('Bridge legacy', () => {
         zigbeeHerdsman.createGroup.mockClear();
         MQTT.events.message('zigbee2mqtt/bridge/config/add_group', '{"id": 42}');
         await flushPromises();
-        expect(settings.getGroup('group_42')).toStrictEqual({"ID": 42, "friendlyName": "group_42", "friendly_name": "group_42", devices: []});
+        expect(settings.getGroup('group_42')).toStrictEqual({"ID": 42, "friendly_name": "group_42", devices: []});
         expect(zigbeeHerdsman.createGroup).toHaveBeenCalledTimes(1);
         expect(zigbeeHerdsman.createGroup).toHaveBeenCalledWith(42)
     });
@@ -366,7 +366,7 @@ describe('Bridge legacy', () => {
         controller.state.state = {'0x000b57fffec6a5b3': {brightness: 100}};
         const device = zigbeeHerdsman.devices.bulb_color;
         device.removeFromNetwork.mockClear();
-        expect(settings.get().ban.length).toBe(0);
+        expect(settings.get().blocklist.length).toBe(0);
         await flushPromises();
         MQTT.publish.mockClear();
         MQTT.events.message('zigbee2mqtt/bridge/config/remove', 'bulb_color');
@@ -381,14 +381,14 @@ describe('Bridge legacy', () => {
             expect.any(Function)
         );
         expect(controller.state.state).toStrictEqual({});
-        expect(settings.get().ban.length).toBe(0);
+        expect(settings.get().blocklist.length).toBe(0);
     });
 
     it('Should allow to force remove device', async () => {
         controller.state.state = {'0x000b57fffec6a5b3': {brightness: 100}};
         const device = zigbeeHerdsman.devices.bulb_color;
         device.removeFromDatabase.mockClear();
-        expect(settings.get().ban.length).toBe(0);
+        expect(settings.get().blocklist.length).toBe(0);
         await flushPromises();
         MQTT.publish.mockClear();
         MQTT.events.message('zigbee2mqtt/bridge/config/force_remove', 'bulb_color');
@@ -403,13 +403,13 @@ describe('Bridge legacy', () => {
             expect.any(Function)
         );
         expect(controller.state.state).toStrictEqual({});
-        expect(settings.get().ban.length).toBe(0);
+        expect(settings.get().blocklist.length).toBe(0);
     });
 
-    it('Should allow to ban device', async () => {
+    it('Should allow to block device', async () => {
         const device = zigbeeHerdsman.devices.bulb_color;
         device.removeFromNetwork.mockClear();
-        expect(settings.get().ban.length).toBe(0);
+        expect(settings.get().blocklist.length).toBe(0);
         await flushPromises();
         MQTT.publish.mockClear();
         MQTT.events.message('zigbee2mqtt/bridge/config/ban', 'bulb_color');
@@ -423,7 +423,7 @@ describe('Bridge legacy', () => {
             {qos: 0, retain: false},
             expect.any(Function)
         );
-        expect(settings.get().ban).toStrictEqual(['0x000b57fffec6a5b3']);
+        expect(settings.get().blocklist).toStrictEqual(['0x000b57fffec6a5b3']);
     });
 
     it('Shouldnt crash when removing non-existing device', async () => {
@@ -443,7 +443,7 @@ describe('Bridge legacy', () => {
         await flushPromises();
         expect(device.removeFromNetwork).toHaveBeenCalledTimes(1);
         expect(MQTT.publish).toHaveBeenCalledTimes(1);
-        expect(settings.getDevice('bulb_color')).toStrictEqual({"ID": "0x000b57fffec6a5b3", "friendlyName": "bulb_color", "friendly_name": "bulb_color", "retain": false})
+        expect(settings.getDevice('bulb_color')).toStrictEqual({"ID": "0x000b57fffec6a5b3", "friendly_name": "bulb_color", "retain": false})
         expect(MQTT.publish).toHaveBeenCalledTimes(1);
     });
 
@@ -457,7 +457,7 @@ describe('Bridge legacy', () => {
         await flushPromises();
         expect(device.removeFromNetwork).toHaveBeenCalledTimes(1);
         expect(MQTT.publish).toHaveBeenCalledTimes(1);
-        expect(settings.getDevice('bulb_color')).toStrictEqual({"ID": "0x000b57fffec6a5b3", "friendlyName": "bulb_color", "friendly_name": "bulb_color", "retain": false})
+        expect(settings.getDevice('bulb_color')).toStrictEqual({"ID": "0x000b57fffec6a5b3", "friendly_name": "bulb_color", "retain": false})
         expect(MQTT.publish).toHaveBeenCalledTimes(1);
     });
 
@@ -478,6 +478,6 @@ describe('Bridge legacy', () => {
         MQTT.events.message('zigbee2mqtt/bridge/config/touchlink/factory_reset', '');
         await flushPromises();
         expect(zigbeeHerdsman.touchlinkFactoryResetFirst).toHaveBeenCalledTimes(1);
-        expect(logger.warn).toHaveBeenCalledWith('Failed to factory reset device through Touchlink');
+        expect(logger.warning).toHaveBeenCalledWith('Failed to factory reset device through Touchlink');
     });
 });

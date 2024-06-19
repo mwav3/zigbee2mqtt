@@ -1,39 +1,57 @@
-import * as data from './data';
-import * as utils from './utils';
+import data from './data';
+import utils from './utils';
 import objectAssignDeep from 'object-assign-deep';
 import path from 'path';
-import * as yaml from './yaml';
-import Ajv from 'ajv';
+import yaml from './yaml';
+import Ajv, {ValidateFunction} from 'ajv';
 import schemaJson from './settings.schema.json';
-export const schema = schemaJson;
+export let schema = schemaJson;
+// @ts-ignore
+schema = {};
+objectAssignDeep(schema, schemaJson);
 
-// TODO: check all
+// Remove legacy settings from schema
+{
+    delete schema.properties.advanced.properties.homeassistant_discovery_topic;
+    delete schema.properties.advanced.properties.homeassistant_legacy_entity_attributes;
+    delete schema.properties.advanced.properties.homeassistant_legacy_triggers;
+    delete schema.properties.advanced.properties.homeassistant_status_topic;
+    delete schema.properties.advanced.properties.soft_reset_timeout;
+    delete schema.properties.advanced.properties.report;
+    delete schema.properties.advanced.properties.baudrate;
+    delete schema.properties.advanced.properties.rtscts;
+    delete schema.properties.advanced.properties.ikea_ota_use_test_url;
+    delete schema.properties.experimental;
+    delete schemaJson.properties.whitelist;
+    delete schemaJson.properties.ban;
+}
+
+/** NOTE: by order of priority, lower index is lower level (more important) */
+export const LOG_LEVELS: readonly string[] = ['error', 'warning', 'info', 'debug'] as const;
+export type LogLevel = typeof LOG_LEVELS[number];
 
 // DEPRECATED ZIGBEE2MQTT_CONFIG: https://github.com/Koenkk/zigbee2mqtt/issues/4697
 const file = process.env.ZIGBEE2MQTT_CONFIG ?? data.joinPath('configuration.yaml');
-const ajvSetting = new Ajv({allErrors: true}).addKeyword('requiresRestart').compile(schema);
+const ajvSetting = new Ajv({allErrors: true}).addKeyword('requiresRestart').compile(schemaJson);
 const ajvRestartRequired = new Ajv({allErrors: true})
-    .addKeyword({keyword: 'requiresRestart', validate: (schema: unknown) => !schema}).compile(schema);
-
+    .addKeyword({keyword: 'requiresRestart', validate: (s: unknown) => !s}).compile(schemaJson);
+const ajvRestartRequiredDeviceOptions = new Ajv({allErrors: true})
+    .addKeyword({keyword: 'requiresRestart', validate: (s: unknown) => !s}).compile(schemaJson.definitions.device);
+const ajvRestartRequiredGroupOptions = new Ajv({allErrors: true})
+    .addKeyword({keyword: 'requiresRestart', validate: (s: unknown) => !s}).compile(schemaJson.definitions.group);
 const defaults: RecursivePartial<Settings> = {
-    passlist: [],
-    blocklist: [],
-    // Deprecated: use block/passlist
-    whitelist: [],
-    ban: [],
     permit_join: false,
+    external_converters: [],
     mqtt: {
+        base_topic: 'zigbee2mqtt',
         include_device_information: false,
-        /**
-         * Configurable force disable retain flag on mqtt publish.
-         * https://github.com/Koenkk/zigbee2mqtt/pull/4948
-         */
         force_disable_retain: false,
     },
     serial: {
         disable_led: false,
     },
-    device_options: {},
+    passlist: [],
+    blocklist: [],
     map_options: {
         graphviz: {
             colors: {
@@ -54,139 +72,168 @@ const defaults: RecursivePartial<Settings> = {
             },
         },
     },
-    experimental: {
-        // json or attribute or attribute_and_json
-        output: 'json',
+    ota: {
+        update_check_interval: 24 * 60,
+        disable_automatic_update_check: false,
     },
+    device_options: {},
     advanced: {
         legacy_api: true,
+        legacy_availability_payload: true,
         log_rotation: true,
         log_symlink_current: false,
         log_output: ['console', 'file'],
         log_directory: path.join(data.getPath(), 'log', '%TIMESTAMP%'),
-        log_file: 'log.txt',
+        log_file: 'log.log',
         log_level: /* istanbul ignore next */ process.env.DEBUG ? 'debug' : 'info',
+        log_namespaced_levels: {},
         log_syslog: {},
-        soft_reset_timeout: 0,
+        log_debug_to_mqtt_frontend: false,
+        log_debug_namespace_ignore: '',
         pan_id: 0x1a62,
         ext_pan_id: [0xDD, 0xDD, 0xDD, 0xDD, 0xDD, 0xDD, 0xDD, 0xDD],
         channel: 11,
         adapter_concurrent: null,
         adapter_delay: null,
-
-        // Availability timeout in seconds, disabled by default.
-        availability_timeout: 0,
-        availability_blocklist: [],
-        availability_passlist: [],
-        // Deprecated, use block/passlist
-        availability_blacklist: [],
-        availability_whitelist: [],
-
-        /**
-         * Home Assistant requires ALL attributes to be present in ALL MQTT messages send by the device.
-         * https://community.home-assistant.io/t/missing-value-with-mqtt-only-last-data-set-is-shown/47070/9
-         *
-         * Therefore Zigbee2MQTT BY DEFAULT caches all values and resend it with every message.
-         * advanced.cache_state in configuration.yaml allows to configure this.
-         * https://www.zigbee2mqtt.io/configuration/configuration.html
-         */
         cache_state: true,
         cache_state_persistent: true,
         cache_state_send_on_startup: true,
-
-        /**
-         * Add a last_seen attribute to mqtt messages, contains date/time of zigbee message arrival
-         * "ISO_8601": ISO 8601 format
-         * "ISO_8601_local": Local ISO 8601 format (instead of UTC-based)
-         * "epoch": milliseconds elapsed since the UNIX epoch
-         * "disable": no last_seen attribute (default)
-         */
         last_seen: 'disable',
-
-        // Optional: Add an elapsed attribute to MQTT messages, contains milliseconds since the previous msg
         elapsed: false,
-
-        /**
-         * https://github.com/Koenkk/zigbee2mqtt/issues/685#issuecomment-449112250
-         *
-         * Network key will serve as the encryption key of your network.
-         * Changing this will require you to repair your devices.
-         */
         network_key: [1, 3, 5, 7, 9, 11, 13, 15, 0, 2, 4, 6, 8, 10, 12, 13],
-
-        /**
-         * Enables reporting feature
-         */
-        report: false,
-
-        /**
-         * Home Assistant discovery topic
-         */
-        homeassistant_discovery_topic: 'homeassistant',
-
-        /**
-         * Home Assistant status topic
-         */
-        homeassistant_status_topic: 'hass/status',
-
-        /**
-         * Home Assistant legacy entity attributes, when enabled:
-         * Zigbee2MQTT will send additional states as attributes with each entity.
-         * For example, A temperature & humidity sensor will have 2 entities for
-         * the temperature and humidity, with this setting enabled both entities
-         * will also have an temperature and humidity attribute.
-         */
-        homeassistant_legacy_entity_attributes: true,
-
-        /**
-         * Home Assistant legacy triggers, when enabled:
-         * - Zigbee2mqt will send an empty 'action' or 'click' after one has been send
-         * - A 'sensor_action' and 'sensor_click' will be discoverd
-         */
-        homeassistant_legacy_triggers: true,
-
-        /**
-         * Configurable timestampFormat
-         * https://github.com/Koenkk/zigbee2mqtt/commit/44db557a0c83f419d66755d14e460cd78bd6204e
-         */
         timestamp_format: 'YYYY-MM-DD HH:mm:ss',
+        output: 'json',
+        // Everything below is deprecated
+        availability_blocklist: [],
+        availability_passlist: [],
+        availability_blacklist: [],
+        availability_whitelist: [],
+        soft_reset_timeout: 0,
+        report: false,
     },
-    ota: {
-        /**
-         * Minimal time delta in minutes between polling third party server for potential firmware updates
-         */
-        update_check_interval: 24 * 60,
-        /**
-         * Completely disallow Zigbee devices to initiate a search for a potential firmware update.
-         * If set to true, only a user-initiated update search will be possible.
-         */
-        disable_automatic_update_check: false,
-    },
-    external_converters: [],
 };
 
 let _settings: Partial<Settings>;
 let _settingsWithDefaults: Settings;
 
+function loadSettingsWithDefaults(): void {
+    _settingsWithDefaults = objectAssignDeep({}, defaults, getInternalSettings()) as Settings;
+
+    if (!_settingsWithDefaults.devices) {
+        _settingsWithDefaults.devices = {};
+    }
+
+    if (!_settingsWithDefaults.groups) {
+        _settingsWithDefaults.groups = {};
+    }
+
+    if (_settingsWithDefaults.homeassistant) {
+        const defaults = {discovery_topic: 'homeassistant', status_topic: 'hass/status',
+            legacy_entity_attributes: true, legacy_triggers: true};
+        const sLegacy = {};
+        if (_settingsWithDefaults.advanced) {
+            for (const key of ['homeassistant_legacy_triggers', 'homeassistant_discovery_topic',
+                'homeassistant_legacy_entity_attributes', 'homeassistant_status_topic']) {
+                // @ts-ignore
+                if (_settingsWithDefaults.advanced[key] !== undefined) {
+                    // @ts-ignore
+                    sLegacy[key.replace('homeassistant_', '')] = _settingsWithDefaults.advanced[key];
+                }
+            }
+        }
+
+        const s = typeof _settingsWithDefaults.homeassistant === 'object' ? _settingsWithDefaults.homeassistant : {};
+        // @ts-ignore
+        _settingsWithDefaults.homeassistant = {};
+        objectAssignDeep(_settingsWithDefaults.homeassistant, defaults, sLegacy, s);
+    }
+
+    if (_settingsWithDefaults.availability || _settingsWithDefaults.advanced?.availability_timeout) {
+        const defaults = {};
+        const s = typeof _settingsWithDefaults.availability === 'object' ? _settingsWithDefaults.availability : {};
+        // @ts-ignore
+        _settingsWithDefaults.availability = {};
+        objectAssignDeep(_settingsWithDefaults.availability, defaults, s);
+    }
+
+    if (_settingsWithDefaults.frontend) {
+        const defaults = {port: 8080, auth_token: false};
+        const s = typeof _settingsWithDefaults.frontend === 'object' ? _settingsWithDefaults.frontend : {};
+        // @ts-ignore
+        _settingsWithDefaults.frontend = {};
+        objectAssignDeep(_settingsWithDefaults.frontend, defaults, s);
+    }
+
+    if (_settings.advanced?.hasOwnProperty('baudrate') && _settings.serial?.baudrate == null) {
+        // @ts-ignore
+        _settingsWithDefaults.serial.baudrate = _settings.advanced.baudrate;
+    }
+
+    if (_settings.advanced?.hasOwnProperty('rtscts') && _settings.serial?.rtscts == null) {
+        // @ts-ignore
+        _settingsWithDefaults.serial.rtscts = _settings.advanced.rtscts;
+    }
+
+    if (_settings.advanced?.hasOwnProperty('ikea_ota_use_test_url') && _settings.ota?.ikea_ota_use_test_url == null) {
+        // @ts-ignore
+        _settingsWithDefaults.ota.ikea_ota_use_test_url = _settings.advanced.ikea_ota_use_test_url;
+    }
+
+    // @ts-ignore
+    if (_settings.experimental?.hasOwnProperty('transmit_power') && _settings.advanced?.transmit_power == null) {
+        // @ts-ignore
+        _settingsWithDefaults.advanced.transmit_power = _settings.experimental.transmit_power;
+    }
+
+    // @ts-ignore
+    if (_settings.experimental?.hasOwnProperty('output') && _settings.advanced?.output == null) {
+        // @ts-ignore
+        _settingsWithDefaults.advanced.output = _settings.experimental.output;
+    }
+
+    if (_settings.advanced?.log_level === 'warn') {
+        _settingsWithDefaults.advanced.log_level = 'warning';
+    }
+
+    // @ts-ignore
+    _settingsWithDefaults.ban && _settingsWithDefaults.blocklist.push(..._settingsWithDefaults.ban);
+    // @ts-ignore
+    _settingsWithDefaults.whitelist && _settingsWithDefaults.passlist.push(..._settingsWithDefaults.whitelist);
+}
+
+function parseValueRef(text: string): {filename: string, key: string} | null {
+    const match = /!(.*) (.*)/g.exec(text);
+    if (match) {
+        let filename = match[1];
+        // This is mainly for backward compatibility.
+        if (!filename.endsWith('.yaml') && !filename.endsWith('.yml')) {
+            filename += '.yaml';
+        }
+        return {filename, key: match[2]};
+    } else {
+        return null;
+    }
+}
+
 function write(): void {
     const settings = getInternalSettings();
-    /* eslint-disable-line */ // @ts-ignore
-    const toWrite = objectAssignDeep.noMutate(settings);
+    const toWrite: KeyValue = objectAssignDeep({}, settings);
 
     // Read settings to check if we have to split devices/groups into separate file.
     const actual = yaml.read(file);
 
-    // In case the setting is defined in a separte file (e.g. !secret network_key) update it there.
+    // In case the setting is defined in a separate file (e.g. !secret network_key) update it there.
     for (const path of [
+        ['mqtt', 'server'],
         ['mqtt', 'user'],
         ['mqtt', 'password'],
         ['advanced', 'network_key'],
         ['frontend', 'auth_token'],
     ]) {
         if (actual[path[0]] && actual[path[0]][path[1]]) {
-            const match = /!(.*) (.*)/g.exec(actual[path[0]][path[1]]);
-            if (match) {
-                yaml.updateIfChanged(data.joinPath(`${match[1]}.yaml`), match[2], toWrite[path[0]][path[1]]);
+            const ref = parseValueRef(actual[path[0]][path[1]]);
+            if (ref) {
+                yaml.updateIfChanged(data.joinPath(ref.filename), ref.key, toWrite[path[0]][path[1]]);
                 toWrite[path[0]][path[1]] = actual[path[0]][path[1]];
             }
         }
@@ -194,10 +241,9 @@ function write(): void {
 
     // Write devices/groups to separate file if required.
     const writeDevicesOrGroups = (type: 'devices' | 'groups'): void => {
-        if (typeof actual[type] === 'string' || Array.isArray(actual[type])) {
+        if (typeof actual[type] === 'string' || (Array.isArray(actual[type]) && actual[type].length > 0)) {
             const fileToWrite = Array.isArray(actual[type]) ? actual[type][0] : actual[type];
-            /* eslint-disable-line */ // @ts-ignore
-            const content = objectAssignDeep.noMutate(settings[type]);
+            const content = objectAssignDeep({}, settings[type]);
 
             // If an array, only write to first file and only devices which are not in the other files.
             if (Array.isArray(actual[type])) {
@@ -218,8 +264,7 @@ function write(): void {
     yaml.writeIfChanged(file, toWrite);
 
     _settings = read();
-    /* eslint-disable-line */ // @ts-ignore
-    _settingsWithDefaults = objectAssignDeep.noMutate(defaults, getInternalSettings());
+    loadSettingsWithDefaults();
 }
 
 export function validate(): string[] {
@@ -251,17 +296,25 @@ export function validate(): string[] {
         errors.push(`advanced.pan_id: should be number or 'GENERATE' (is '${_settings.advanced.pan_id}')`);
     }
 
+    if (_settings.advanced && _settings.advanced.ext_pan_id && typeof _settings.advanced.ext_pan_id === 'string' &&
+        _settings.advanced.ext_pan_id !== 'GENERATE') {
+        errors.push(`advanced.ext_pan_id: should be array or 'GENERATE' (is '${_settings.advanced.ext_pan_id}')`);
+    }
+
     // Verify that all friendly names are unique
     const names: string[] = [];
-    const check = (name: string): void => {
-        if (names.includes(name)) errors.push(`Duplicate friendly_name '${name}' found`);
-        errors.push(...utils.validateFriendlyName(name));
-        names.push(name);
+    const check = (e: DeviceOptions | GroupOptions): void => {
+        if (names.includes(e.friendly_name)) errors.push(`Duplicate friendly_name '${e.friendly_name}' found`);
+        errors.push(...utils.validateFriendlyName(e.friendly_name));
+        names.push(e.friendly_name);
+        if (e.qos != null && ![0, 1, 2].includes(e.qos)) {
+            errors.push(`QOS for '${e.friendly_name}' not valid, should be 0, 1 or 2 got ${e.qos}`);
+        }
     };
 
     const settingsWithDefaults = get();
-    Object.values(settingsWithDefaults.devices).forEach((d) => check(d.friendly_name));
-    Object.values(settingsWithDefaults.groups).forEach((g) => check(g.friendly_name));
+    Object.values(settingsWithDefaults.devices).forEach((d) => check(d));
+    Object.values(settingsWithDefaults.groups).forEach((g) => check(g));
 
     if (settingsWithDefaults.mqtt.version !== 5) {
         for (const device of Object.values(settingsWithDefaults.devices)) {
@@ -273,7 +326,7 @@ export function validate(): string[] {
 
     const checkAvailabilityList = (list: string[], type: string): void => {
         list.forEach((e) => {
-            if (!getEntity(e)) {
+            if (!getDevice(e)) {
                 errors.push(`Non-existing entity '${e}' specified in '${type}'`);
             }
         });
@@ -289,37 +342,42 @@ export function validate(): string[] {
 
 function read(): Settings {
     const s = yaml.read(file) as Settings;
+    applyEnvironmentVariables(s);
 
     // Read !secret MQTT username and password if set
     // eslint-disable-next-line
-    const interpetValue = (value: any): any => {
-        const re = /!(.*) (.*)/g;
-        const match = re.exec(value);
-        if (match) {
-            const file = data.joinPath(`${match[1]}.yaml`);
-            const key = match[2];
-            return yaml.read(file)[key];
+    const interpretValue = (value: any): any => {
+        const ref = parseValueRef(value);
+        if (ref) {
+            return yaml.read(data.joinPath(ref.filename))[ref.key];
         } else {
             return value;
         }
     };
 
-    if (s.mqtt?.user && s.mqtt?.password) {
-        s.mqtt.user = interpetValue(s.mqtt.user);
-        s.mqtt.password = interpetValue(s.mqtt.password);
+    if (s.mqtt?.user) {
+        s.mqtt.user = interpretValue(s.mqtt.user);
+    }
+
+    if (s.mqtt?.password) {
+        s.mqtt.password = interpretValue(s.mqtt.password);
+    }
+
+    if (s.mqtt?.server) {
+        s.mqtt.server = interpretValue(s.mqtt.server);
     }
 
     if (s.advanced?.network_key) {
-        s.advanced.network_key = interpetValue(s.advanced.network_key);
+        s.advanced.network_key = interpretValue(s.advanced.network_key);
     }
 
     if (s.frontend?.auth_token) {
-        s.frontend.auth_token = interpetValue(s.frontend.auth_token);
+        s.frontend.auth_token = interpretValue(s.frontend.auth_token);
     }
 
     // Read devices/groups configuration from separate file if specified.
     const readDevicesOrGroups = (type: 'devices' | 'groups'): void => {
-        if (typeof s[type] === 'string' || Array.isArray(s[type])) {
+        if (typeof s[type] === 'string' || (Array.isArray(s[type]) && Array(s[type]).length > 0)) {
             /* eslint-disable-line */ // @ts-ignore
             const files: string[] = Array.isArray(s[type]) ? s[type] : [s[type]];
             s[type] = {};
@@ -354,7 +412,11 @@ function applyEnvironmentVariables(settings: Partial<Settings>): void {
                         }, settings);
 
                         if (type.indexOf('object') >= 0 || type.indexOf('array') >= 0) {
-                            setting[key] = JSON.parse(process.env[envVariableName]);
+                            try {
+                                setting[key] = JSON.parse(process.env[envVariableName]);
+                            } catch (error) {
+                                setting[key] = process.env[envVariableName];
+                            }
                         } else if (type.indexOf('number') >= 0) {
                             /* eslint-disable-line */ // @ts-ignore
                             setting[key] = process.env[envVariableName] * 1;
@@ -371,7 +433,7 @@ function applyEnvironmentVariables(settings: Partial<Settings>): void {
 
                 if (typeof obj[key] === 'object' && obj[key]) {
                     const newPath = [...path];
-                    if (key !== 'properties') {
+                    if (key !== 'properties' && key !== 'oneOf' && !Number.isInteger(Number(key))) {
                         newPath.push(key);
                     }
                     iterate(obj[key], newPath);
@@ -379,13 +441,12 @@ function applyEnvironmentVariables(settings: Partial<Settings>): void {
             }
         });
     };
-    iterate(schema.properties, []);
+    iterate(schemaJson.properties, []);
 }
 
 function getInternalSettings(): Partial<Settings> {
     if (!_settings) {
         _settings = read();
-        applyEnvironmentVariables(_settings);
     }
 
     return _settings;
@@ -393,16 +454,7 @@ function getInternalSettings(): Partial<Settings> {
 
 export function get(): Settings {
     if (!_settingsWithDefaults) {
-        /* eslint-disable-line */ // @ts-ignore
-        _settingsWithDefaults = objectAssignDeep.noMutate(defaults, getInternalSettings());
-    }
-
-    if (!_settingsWithDefaults.devices) {
-        _settingsWithDefaults.devices = {};
-    }
-
-    if (!_settingsWithDefaults.groups) {
-        _settingsWithDefaults.groups = {};
+        loadSettingsWithDefaults();
     }
 
     return _settingsWithDefaults;
@@ -428,49 +480,51 @@ export function set(path: string[], value: string | number | boolean | KeyValue)
     write();
 }
 
-export function apply(newSettings: Record<string, unknown>): boolean {
+export function apply(settings: Record<string, unknown>): boolean {
+    getInternalSettings(); // Ensure _settings is initialized.
+    /* eslint-disable-line */ // @ts-ignore
+    const newSettings = objectAssignDeep.noMutate(_settings, settings);
+    utils.removeNullPropertiesFromObject(newSettings);
     ajvSetting(newSettings);
     const errors = ajvSetting.errors && ajvSetting.errors.filter((e) => e.keyword !== 'required');
-    if (errors.length) {
+    if (errors?.length) {
         const error = errors[0];
         throw new Error(`${error.instancePath.substring(1)} ${error.message}`);
     }
 
-    getInternalSettings(); // Ensure _settings is intialized.
-    /* eslint-disable-line */ // @ts-ignore
-    _settings = objectAssignDeep.noMutate(_settings, newSettings);
+    _settings = newSettings;
     write();
 
-    ajvRestartRequired(newSettings);
+    ajvRestartRequired(settings);
     const restartRequired = ajvRestartRequired.errors &&
         !!ajvRestartRequired.errors.find((e) => e.keyword === 'requiresRestart');
     return restartRequired;
 }
 
-export function getGroup(IDorName: string | number): GroupSettings {
+export function getGroup(IDorName: string | number): GroupOptions {
     const settings = get();
     const byID = settings.groups[IDorName];
     if (byID) {
-        return {devices: [], ...byID, ID: Number(IDorName), friendlyName: byID.friendly_name};
+        return {devices: [], ...byID, ID: Number(IDorName)};
     }
 
     for (const [ID, group] of Object.entries(settings.groups)) {
         if (group.friendly_name === IDorName) {
-            return {devices: [], ...group, ID: Number(ID), friendlyName: group.friendly_name};
+            return {devices: [], ...group, ID: Number(ID)};
         }
     }
 
     return null;
 }
 
-export function getGroups(): GroupSettings[] {
+export function getGroups(): GroupOptions[] {
     const settings = get();
     return Object.entries(settings.groups).map(([ID, group]) => {
-        return {devices: [], ...group, ID: Number(ID), friendlyName: group.friendly_name};
+        return {devices: [], ...group, ID: Number(ID)};
     });
 }
 
-function getGroupThrowIfNotExists(IDorName: string): GroupSettings {
+function getGroupThrowIfNotExists(IDorName: string): GroupOptions {
     const group = getGroup(IDorName);
     if (!group) {
         throw new Error(`Group '${IDorName}' does not exist`);
@@ -479,23 +533,23 @@ function getGroupThrowIfNotExists(IDorName: string): GroupSettings {
     return group;
 }
 
-export function getDevice(IDorName: string): DeviceSettings {
+export function getDevice(IDorName: string): DeviceOptions {
     const settings = get();
     const byID = settings.devices[IDorName];
     if (byID) {
-        return {...byID, ID: IDorName, friendlyName: byID.friendly_name};
+        return {...byID, ID: IDorName};
     }
 
     for (const [ID, device] of Object.entries(settings.devices)) {
         if (device.friendly_name === IDorName) {
-            return {...device, ID, friendlyName: device.friendly_name};
+            return {...device, ID};
         }
     }
 
     return null;
 }
 
-function getDeviceThrowIfNotExists(IDorName: string): DeviceSettings {
+function getDeviceThrowIfNotExists(IDorName: string): DeviceOptions {
     const device = getDevice(IDorName);
     if (!device) {
         throw new Error(`Device '${IDorName}' does not exist`);
@@ -504,21 +558,7 @@ function getDeviceThrowIfNotExists(IDorName: string): DeviceSettings {
     return device;
 }
 
-export function getEntity(IDorName: string): EntitySettings {
-    const device = getDevice(IDorName);
-    if (device) {
-        return {...device, type: 'device'};
-    }
-
-    const group = getGroup(IDorName);
-    if (group) {
-        return {...group, type: 'group'};
-    }
-
-    return null;
-}
-
-export function addDevice(ID: string): DeviceSettings {
+export function addDevice(ID: string): DeviceOptions {
     if (getDevice(ID)) {
         throw new Error(`Device '${ID}' already exists`);
     }
@@ -534,17 +574,17 @@ export function addDevice(ID: string): DeviceSettings {
     return getDevice(ID);
 }
 
-export function whitelistDevice(ID: string): void {
+export function addDeviceToPasslist(ID: string): void {
     const settings = getInternalSettings();
-    if (!settings.whitelist) {
-        settings.whitelist = [];
+    if (!settings.passlist) {
+        settings.passlist = [];
     }
 
-    if (settings.whitelist.includes(ID)) {
-        throw new Error(`Device '${ID}' already whitelisted`);
+    if (settings.passlist.includes(ID)) {
+        throw new Error(`Device '${ID}' already in passlist`);
     }
 
-    settings.whitelist.push(ID);
+    settings.passlist.push(ID);
     write();
 }
 
@@ -558,16 +598,6 @@ export function blockDevice(ID: string): void {
     write();
 }
 
-export function banDevice(ID: string): void {
-    const settings = getInternalSettings();
-    if (!settings.ban) {
-        settings.ban = [];
-    }
-
-    settings.ban.push(ID);
-    write();
-}
-
 export function removeDevice(IDorName: string): void {
     const device = getDeviceThrowIfNotExists(IDorName);
     const settings = getInternalSettings();
@@ -576,7 +606,7 @@ export function removeDevice(IDorName: string): void {
     // Remove device from groups
     if (settings.groups) {
         const regex =
-            new RegExp(`^(${device.friendlyName}|${device.ID})(/(\\d|${utils.endpointNames.join('|')}))?$`);
+            new RegExp(`^(${device.friendly_name}|${device.ID})(/[^/]+)?$`);
         for (const group of Object.values(settings.groups).filter((g) => g.devices)) {
             group.devices = group.devices.filter((device) => !device.match(regex));
         }
@@ -585,7 +615,7 @@ export function removeDevice(IDorName: string): void {
     write();
 }
 
-export function addGroup(name: string, ID?: string): GroupSettings {
+export function addGroup(name: string, ID?: string): GroupOptions {
     utils.validateFriendlyName(name, true);
     if (getGroup(name) || getDevice(name)) {
         throw new Error(`friendly_name '${name}' is already in use`);
@@ -658,21 +688,27 @@ export function removeGroup(IDorName: string | number): void {
     write();
 }
 
-export function changeEntityOptions(IDorName: string, newOptions: KeyValue): void {
+export function changeEntityOptions(IDorName: string, newOptions: KeyValue): boolean {
     const settings = getInternalSettings();
     delete newOptions.friendly_name;
     delete newOptions.devices;
+    let validator: ValidateFunction;
     if (getDevice(IDorName)) {
         objectAssignDeep(settings.devices[getDevice(IDorName).ID], newOptions);
         utils.removeNullPropertiesFromObject(settings.devices[getDevice(IDorName).ID]);
+        validator = ajvRestartRequiredDeviceOptions;
     } else if (getGroup(IDorName)) {
         objectAssignDeep(settings.groups[getGroup(IDorName).ID], newOptions);
         utils.removeNullPropertiesFromObject(settings.groups[getGroup(IDorName).ID]);
+        validator = ajvRestartRequiredGroupOptions;
     } else {
         throw new Error(`Device or group '${IDorName}' does not exist`);
     }
 
     write();
+    validator(newOptions);
+    const restartRequired = validator.errors && !!validator.errors.find((e) => e.keyword === 'requiresRestart');
+    return restartRequired;
 }
 
 export function changeFriendlyName(IDorName: string, newName: string): void {

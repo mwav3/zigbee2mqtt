@@ -1,11 +1,10 @@
 const tmp = require('tmp');
-const yaml = require('../../lib/util/yaml');
+const yaml = require('../../lib/util/yaml').default;
 const path = require('path');
 const fs = require('fs');
 const stringify = require('json-stable-stringify-without-jsonify');
 
 const mockDir = tmp.dirSync().name;
-const mockDirStorage = tmp.dirSync().name;
 const stateFile = path.join(mockDir, 'state.json');
 
 function writeDefaultConfiguration() {
@@ -22,7 +21,8 @@ function writeDefaultConfiguration() {
         devices: {
             "0x000b57fffec6a5b2": {
                 retain: true,
-                friendly_name: "bulb"
+                friendly_name: "bulb",
+                description: "this is my bulb",
             },
             "0x0017880104e45517": {
                 retain: true,
@@ -153,6 +153,23 @@ function writeDefaultConfiguration() {
             '0x0017880104e43559': {
                 friendly_name: 'U202DST600ZB'
             },
+            '0xf4ce368a38be56a1': {
+                retain: false,
+                friendly_name: 'zigfred_plus',
+                front_surface_enabled: 'true',
+                dimmer_1_enabled: 'true',
+                dimmer_1_dimming_enabled: 'true',
+                dimmer_2_enabled: 'true',
+                dimmer_2_dimming_enabled: 'true',
+                dimmer_3_enabled: 'true',
+                dimmer_3_dimming_enabled: 'true',
+                dimmer_4_enabled: 'true',
+                dimmer_4_dimming_enabled: 'true',
+                cover_1_enabled: 'true',
+                cover_1_tilt_enabled: 'true',
+                cover_2_enabled: 'true',
+                cover_2_tilt_enabled: 'true',
+            },
             '0x0017880104e44559': {
                 friendly_name: '3157100_thermostat',
             },
@@ -161,6 +178,12 @@ function writeDefaultConfiguration() {
             },
             '0x0017882104a44559': {
                 friendly_name: 'TS0601_thermostat',
+            },
+            '0x0017882104a44560': {
+                friendly_name: 'TS0601_switch',
+            },
+            '0x0017882104a44562': {
+                friendly_name: 'TS0601_cover_switch',
             },
             '0x0017882194e45543': {
                 friendly_name: 'QS-Zigbee-D02-TRIAC-2C-LN',
@@ -243,6 +266,9 @@ const defaultState = {
     "0x0017880104e45517": {
         "brightness": 255
     },
+    "1": {
+        'state': 'ON',
+    }
 }
 
 function getDefaultState() {

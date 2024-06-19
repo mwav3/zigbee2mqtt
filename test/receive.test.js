@@ -1,4 +1,5 @@
 const data = require('./stub/data');
+const sleep = require('./stub/sleep');
 const logger = require('./stub/logger');
 const stringify = require('json-stable-stringify-without-jsonify');
 const zigbeeHerdsman = require('./stub/zigbeeHerdsman');
@@ -7,7 +8,7 @@ const settings = require('../lib/util/settings');
 const Controller = require('../lib/controller');
 const flushPromises = require('./lib/flushPromises');
 
-const mocksClear = [MQTT.publish, logger.warn, logger.debug];
+const mocksClear = [MQTT.publish, logger.warning, logger.debug];
 
 describe('Receive', () => {
     let controller;
@@ -15,7 +16,10 @@ describe('Receive', () => {
     beforeAll(async () => {
         jest.useFakeTimers();
         controller = new Controller(jest.fn(), jest.fn());
+        sleep.mock();
         await controller.start();
+        await jest.runOnlyPendingTimers();
+        await flushPromises();
     });
 
     beforeEach(async () => {
@@ -28,6 +32,7 @@ describe('Receive', () => {
 
     afterAll(async () => {
         jest.useRealTimers();
+        sleep.restore();
     });
 
     it('Should handle a zigbee message', async () => {
@@ -84,7 +89,7 @@ describe('Receive', () => {
         await zigbeeHerdsman.events.message({data: {currentPositionLiftPercentage: 90, currentPositionTiltPercentage: 80}, cluster: 'closuresWindowCovering', device, endpoint: device.getEndpoint(1), type: 'attributeReport', linkquality: 10});
         await flushPromises();
         expect(MQTT.publish).toHaveBeenCalledTimes(1);
-        expect(MQTT.publish).toHaveBeenCalledWith('zigbee2mqtt/J1_cover', stringify({position: 10, tilt: 20}), {retain: false, qos: 0}, expect.any(Function));
+        expect(MQTT.publish).toHaveBeenCalledWith('zigbee2mqtt/J1_cover', stringify({position: 10, tilt: 20, state: 'OPEN'}), {retain: false, qos: 0}, expect.any(Function));
 
         // Inverted
         MQTT.publish.mockClear();
@@ -92,7 +97,7 @@ describe('Receive', () => {
         await zigbeeHerdsman.events.message({data: {currentPositionLiftPercentage: 90, currentPositionTiltPercentage: 80}, cluster: 'closuresWindowCovering', device, endpoint: device.getEndpoint(1), type: 'attributeReport', linkquality: 10});
         await flushPromises();
         expect(MQTT.publish).toHaveBeenCalledTimes(1);
-        expect(MQTT.publish).toHaveBeenCalledWith('zigbee2mqtt/J1_cover', stringify({position: 90, tilt: 80}), {retain: false, qos: 0}, expect.any(Function));
+        expect(MQTT.publish).toHaveBeenCalledWith('zigbee2mqtt/J1_cover', stringify({position: 90, tilt: 80, state: 'OPEN'}), {retain: false, qos: 0}, expect.any(Function));
     });
 
     it('Should allow to disable the legacy integration', async () => {
@@ -176,6 +181,47 @@ describe('Receive', () => {
         expect(JSON.parse(MQTT.publish.mock.calls[1][1])).toStrictEqual({temperature: 0.07, pressure: 2, humidity: 0.03});
     });
 
+    it('Should NOT publish old messages from State cache during debouncing', async () => {
+
+        // Summary:
+        // First send multiple measurements to device that is debouncing. Make sure only one message is sent out to MQTT. This also ensures first message is cached to "State".
+        // Then send another measurement to that same device and trigger asynchronous event to push data from Cache. Newest value should be sent out.
+
+        const device = zigbeeHerdsman.devices.WSDCGQ11LM;
+        settings.set(['devices', device.ieeeAddr, 'debounce'], 0.1);
+        await zigbeeHerdsman.events.message({data: {measuredValue: 8}, cluster: 'msTemperatureMeasurement', device, endpoint: device.getEndpoint(1), type: 'attributeReport', linkquality: 10});
+        await zigbeeHerdsman.events.message( {data: {measuredValue: 1}, cluster: 'msRelativeHumidity', device, endpoint: device.getEndpoint(1), type: 'attributeReport', linkquality: 10} );
+        await zigbeeHerdsman.events.message( {data: {measuredValue: 2}, cluster: 'msPressureMeasurement', device, endpoint: device.getEndpoint(1), type: 'attributeReport', linkquality: 10} );
+        await flushPromises();
+        jest.advanceTimersByTime(50);
+        // Test that measurements are combined(=debounced)
+        expect(MQTT.publish).toHaveBeenCalledTimes(0);
+        jest.runOnlyPendingTimers();
+        await flushPromises();
+
+        // Test that only one MQTT is sent out and test its values.
+        expect(MQTT.publish).toHaveBeenCalledTimes(1);
+        expect(MQTT.publish.mock.calls[0][0]).toStrictEqual('zigbee2mqtt/weather_sensor');
+        expect(JSON.parse(MQTT.publish.mock.calls[0][1])).toStrictEqual({temperature: 0.08, humidity: 0.01, pressure: 2});
+
+        // Send another Zigbee message...
+        await zigbeeHerdsman.events.message({data: {measuredValue: 9}, cluster: 'msTemperatureMeasurement', device, endpoint: device.getEndpoint(1), type: 'attributeReport', linkquality: 10});
+        const realDevice = controller.zigbee.resolveEntity(device);
+
+        // Trigger asynchronous event while device is "debouncing" to trigger Message to be sent out from State cache.
+        await controller.publishEntityState( realDevice, {} );
+        jest.runOnlyPendingTimers();
+        await flushPromises();
+
+        // Total of 3 messages should have triggered.
+        expect(MQTT.publish).toHaveBeenCalledTimes(3);
+
+        // Test that message pushed by asynchronous message contains NEW measurement and not old.
+        expect(JSON.parse(MQTT.publish.mock.calls[1][1])).toStrictEqual({temperature: 0.09, humidity: 0.01, pressure: 2});
+        // Test that messages after debouncing contains NEW measurement and not old.
+        expect(JSON.parse(MQTT.publish.mock.calls[2][1])).toStrictEqual({temperature: 0.09, humidity: 0.01, pressure: 2});
+    });    
+
     it('Shouldnt republish old state', async () => {
         // https://github.com/Koenkk/zigbee2mqtt/issues/3572
         const device = zigbeeHerdsman.devices.bulb;
@@ -242,82 +288,27 @@ describe('Receive', () => {
         expect(MQTT.publish.mock.calls[0][2]).toStrictEqual({"qos": 1, "retain": false});
     });
 
-    it('WSDCGQ11LM pressure precision from non ZCL properties', async () => {
-        const device = zigbeeHerdsman.devices.WSDCGQ11LM;
-        settings.set(['devices', device.ieeeAddr, 'temperature_precision'], 1);
-
-        MQTT.publish.mockClear();
-        let payload = {data: {"65281":{"1":2985,"4":5032,"5":9,"6":[0,1],"10":0,"100":2345,"101":4608,"102":91552}}, cluster: 'genBasic', device, endpoint: device.getEndpoint(1), type: 'attributeReport', linkquality: 10};
-        await zigbeeHerdsman.events.message(payload);
-        await flushPromises();
-        expect(MQTT.publish).toHaveBeenCalledTimes(1);
-        expect(JSON.parse(MQTT.publish.mock.calls[0][1])).toStrictEqual({"battery":91,"voltage":2985,"temperature":23.5,"humidity":46.08,"pressure":915.5});
-
-        MQTT.publish.mockClear();
-        payload = {data: {"16":9354,"20":-1,"measuredValue":915}, cluster: 'msPressureMeasurement', device, endpoint: device.getEndpoint(1), type: 'attributeReport', linkquality: 10};
-        await zigbeeHerdsman.events.message(payload);
-        await flushPromises();
-        expect(MQTT.publish).toHaveBeenCalledTimes(1);
-        expect(JSON.parse(MQTT.publish.mock.calls[0][1])).toStrictEqual({"battery":91,"voltage":2985,"temperature":23.5,"humidity":46.08,"pressure":935.4});
-    });
-
-    it('Should handle a zigbee message with voltage 3010', async () => {
+    it('Should handle a zigbee message with voltage 2990', async () => {
         const device = zigbeeHerdsman.devices.WXKG02LM_rev1;
-        const data = {'65281': {'1': 3010}}
+        const data = {'65281': {'1': 2990}}
         const payload = {data, cluster: 'genBasic', device, endpoint: device.getEndpoint(1), type: 'attributeReport', linkquality: 10};
         await zigbeeHerdsman.events.message(payload);
         await flushPromises();
         expect(MQTT.publish).toHaveBeenCalledTimes(1);
         expect(MQTT.publish.mock.calls[0][0]).toStrictEqual('zigbee2mqtt/button_double_key');
-        expect(JSON.parse(MQTT.publish.mock.calls[0][1])).toStrictEqual({battery: 100, voltage: 3010});
-        expect(MQTT.publish.mock.calls[0][2]).toStrictEqual({"qos": 0, "retain": false});
-    });
-
-    it('Should handle a zigbee message with voltage 2850', async () => {
-        const device = zigbeeHerdsman.devices.WXKG02LM_rev1;
-        const data = {'65281': {'1': 2850}}
-        const payload = {data, cluster: 'genBasic', device, endpoint: device.getEndpoint(1), type: 'attributeReport', linkquality: 10};
-        await zigbeeHerdsman.events.message(payload);
-        await flushPromises();
-        expect(MQTT.publish).toHaveBeenCalledTimes(1);
-        expect(MQTT.publish.mock.calls[0][0]).toStrictEqual('zigbee2mqtt/button_double_key');
-        expect(JSON.parse(MQTT.publish.mock.calls[0][1])).toStrictEqual({battery: 35, voltage: 2850});
-        expect(MQTT.publish.mock.calls[0][2]).toStrictEqual({"qos": 0, "retain": false});
-    });
-
-    it('Should handle a zigbee message with voltage 2650', async () => {
-        const device = zigbeeHerdsman.devices.WXKG02LM_rev1;
-        const data = {'65281': {'1': 2650}}
-        const payload = {data, cluster: 'genBasic', device, endpoint: device.getEndpoint(1), type: 'attributeReport', linkquality: 10};
-        await zigbeeHerdsman.events.message(payload);
-        await flushPromises();
-        expect(MQTT.publish).toHaveBeenCalledTimes(1);
-        expect(MQTT.publish.mock.calls[0][0]).toStrictEqual('zigbee2mqtt/button_double_key');
-        expect(JSON.parse(MQTT.publish.mock.calls[0][1])).toStrictEqual({battery: 14, voltage: 2650});
-        expect(MQTT.publish.mock.calls[0][2]).toStrictEqual({"qos": 0, "retain": false});
-    });
-
-    it('Should handle a zigbee message with voltage 2000', async () => {
-        const device = zigbeeHerdsman.devices.WXKG02LM_rev1;
-        const data = {'65281': {'1': 2000}}
-        const payload = {data, cluster: 'genBasic', device, endpoint: device.getEndpoint(1), type: 'attributeReport', linkquality: 10};
-        await zigbeeHerdsman.events.message(payload);
-        await flushPromises();
-        expect(MQTT.publish).toHaveBeenCalledTimes(1);
-        expect(MQTT.publish.mock.calls[0][0]).toStrictEqual('zigbee2mqtt/button_double_key');
-        expect(JSON.parse(MQTT.publish.mock.calls[0][1])).toStrictEqual({battery: 0, voltage: 2000});
+        expect(JSON.parse(MQTT.publish.mock.calls[0][1])).toStrictEqual({battery: 93, voltage: 2990});
         expect(MQTT.publish.mock.calls[0][2]).toStrictEqual({"qos": 0, "retain": false});
     });
 
     it('Should publish 1 message when converted twice', async () => {
         const device = zigbeeHerdsman.devices.RTCGQ11LM;
-        const data = {'65281': {'1': 3045, '3': 19, '4': 17320, '5': 35, '6': [0, 3], '10': 51107, '11': 381, '100': 0}}
+        const data = {'65281': {'1': 3045, '3': 19, '5': 35, '6': [0, 3], '11': 381, '100': 0}}
         const payload = {data, cluster: 'genBasic', device, endpoint: device.getEndpoint(1), type: 'attributeReport', linkquality: 10};
         await zigbeeHerdsman.events.message(payload);
         await flushPromises();
         expect(MQTT.publish).toHaveBeenCalledTimes(1);
         expect(MQTT.publish.mock.calls[0][0]).toStrictEqual('zigbee2mqtt/occupancy_sensor');
-        expect(JSON.parse(MQTT.publish.mock.calls[0][1])).toStrictEqual({'battery': 100, 'illuminance': 381, "illuminance_lux": 381, 'voltage': 3045, 'temperature': 19});
+        expect(JSON.parse(MQTT.publish.mock.calls[0][1])).toStrictEqual({'battery': 100, 'illuminance': 381, "illuminance_lux": 381, 'voltage': 3045, 'device_temperature': 19, 'power_outage_count': 34});
         expect(MQTT.publish.mock.calls[0][2]).toStrictEqual({"qos": 0, "retain": false});
     });
 
@@ -329,20 +320,6 @@ describe('Receive', () => {
         await flushPromises();
         expect(MQTT.publish).toHaveBeenCalledTimes(0);
     });
-
-    // TODO
-    // it('Should publish last_seen for unhandled messages', async () => {
-    //     const device = zigbeeHerdsman.devices.WXKG02LM_rev1;
-    //     settings.set(['advanced', 'last_seen'], 'epoch');
-    //     const data = {onOff: 1};
-    //     const payload = {data, cluster: 'genRssiLocation', device, endpoint: device.getEndpoint(1), type: 'attributeReport', linkquality: 10};
-    //     await zigbeeHerdsman.events.message(payload);
-    //     await flushPromises();
-    //     expect(MQTT.publish).toHaveBeenCalledTimes(1);
-    //     expect(MQTT.publish.mock.calls[0][0]).toStrictEqual('zigbee2mqtt/button_double_key');
-    //     expect(typeof JSON.parse(MQTT.publish.mock.calls[0][1]).last_seen).toBe('number')
-    //     expect(MQTT.publish.mock.calls[0][2]).toStrictEqual({"qos": 0, "retain": false});
-    // });
 
     it('Should publish last_seen epoch', async () => {
         const device = zigbeeHerdsman.devices.WXKG02LM_rev1;
@@ -383,20 +360,6 @@ describe('Receive', () => {
         expect(MQTT.publish.mock.calls[0][2]).toStrictEqual({"qos": 0, "retain": false});
     });
 
-    it('Should handle forwarded Xiaomi messages', async () => {
-        const device = zigbeeHerdsman.devices.ZNCZ02LM;
-        const payload = {data: {measuredValue: -85}, cluster: 'msTemperatureMeasurement', device, endpoint: device.getEndpoint(1), type: 'attributeReport', linkquality: 10, groupID: 6539};
-        await zigbeeHerdsman.events.message(payload);
-        await flushPromises();
-        expect(MQTT.publish).toHaveBeenCalledTimes(1);
-        expect(MQTT.publish).toHaveBeenCalledWith(
-            'zigbee2mqtt/weather_sensor',
-            stringify({temperature: -0.85}),
-            {"qos": 1, "retain": false},
-            expect.any(Function),
-        )
-    });
-
     it('Should handle messages from Xiaomi router devices', async () => {
         const device = zigbeeHerdsman.devices.ZNCZ02LM;
         const data = {onOff: 1};
@@ -428,18 +391,6 @@ describe('Receive', () => {
         expect(MQTT.publish).toHaveBeenCalledTimes(0);
     });
 
-    it('Should not handle messages from unsupported devices and link to docs', async () => {
-        const device = zigbeeHerdsman.devices.unsupported;
-        const data = {onOff: 1};
-        logger.warn.mockClear();
-        const payload = {data, cluster: 'genOnOff', device, endpoint: device.getEndpoint(1), type: 'attributeReport', linkquality: 10};
-        await zigbeeHerdsman.events.message(payload);
-        await flushPromises();
-        expect(logger.warn).toHaveBeenCalledWith(`Received message from unsupported device with Zigbee model 'notSupportedModelID' and manufacturer name 'notSupportedMfg'`);
-        expect(logger.warn).toHaveBeenCalledWith(`Please see: https://www.zigbee2mqtt.io/how_tos/how_to_support_new_devices.html.`);
-        expect(MQTT.publish).toHaveBeenCalledTimes(0);
-    });
-
     it('Should not handle messages from still interviewing devices with unknown definition', async () => {
         const device = zigbeeHerdsman.devices.interviewing;
         const data = {onOff: 1};
@@ -448,13 +399,13 @@ describe('Receive', () => {
         await zigbeeHerdsman.events.message(payload);
         await flushPromises();
         expect(MQTT.publish).toHaveBeenCalledTimes(0);
-        expect(logger.debug).toHaveBeenCalledWith(`Skipping message, definition is undefined and still interviewing`);
+        expect(logger.debug).toHaveBeenCalledWith(`Skipping message, still interviewing`);
     });
 
     it('Should handle a command', async () => {
         const device = zigbeeHerdsman.devices.E1743;
         const data = {};
-        const payload = {data, cluster: 'genLevelCtrl', device, endpoint: device.getEndpoint(1), type: 'commandStopWithOnOff', linkquality: 10};
+        const payload = {data, cluster: 'genLevelCtrl', device, endpoint: device.getEndpoint(1), type: 'commandStopWithOnOff', linkquality: 10, meta: {zclTransactionSequenceNumber: 1}};
         await zigbeeHerdsman.events.message(payload);
         await flushPromises();
         expect(MQTT.publish).toHaveBeenCalledTimes(1);
@@ -470,10 +421,10 @@ describe('Receive', () => {
         const oldNow = Date.now;
         Date.now = jest.fn()
         Date.now.mockReturnValue(new Date(150));
-        await zigbeeHerdsman.events.message(payload);
+        await zigbeeHerdsman.events.message({...payload, meta: {zclTransactionSequenceNumber: 2}});
         await flushPromises();
         Date.now.mockReturnValue(new Date(200));
-        await zigbeeHerdsman.events.message(payload);
+        await zigbeeHerdsman.events.message({...payload, meta: {zclTransactionSequenceNumber: 3}});
         await flushPromises();
         expect(MQTT.publish).toHaveBeenCalledTimes(2);
         expect(MQTT.publish.mock.calls[0][0]).toStrictEqual('zigbee2mqtt/ikea_onoff');
@@ -502,7 +453,7 @@ describe('Receive', () => {
         const data = {instantaneousDemand:496,currentSummDelivered:[0,6648]}
 
         const SP600_NEW = zigbeeHerdsman.devices.SP600_NEW;
-        await zigbeeHerdsman.events.message({data, cluster: 'seMetering', device: SP600_NEW, endpoint: SP600_NEW.getEndpoint(1), type: 'attributeReport', linkquality: 10});
+        await zigbeeHerdsman.events.message({data, cluster: 'seMetering', device: SP600_NEW, endpoint: SP600_NEW.getEndpoint(1), type: 'attributeReport', linkquality: 10, meta: {zclTransactionSequenceNumber: 1}});
         await flushPromises();
         expect(MQTT.publish).toHaveBeenCalledTimes(1);
         expect(MQTT.publish.mock.calls[0][0]).toStrictEqual('zigbee2mqtt/SP600_NEW');
@@ -510,10 +461,18 @@ describe('Receive', () => {
 
         MQTT.publish.mockClear();
         const SP600_OLD = zigbeeHerdsman.devices.SP600_OLD;
-        await zigbeeHerdsman.events.message({data, cluster: 'seMetering', device: SP600_OLD, endpoint: SP600_OLD.getEndpoint(1), type: 'attributeReport', linkquality: 10});
+        await zigbeeHerdsman.events.message({data, cluster: 'seMetering', device: SP600_OLD, endpoint: SP600_OLD.getEndpoint(1), type: 'attributeReport', linkquality: 10, meta: {zclTransactionSequenceNumber: 2}});
         await flushPromises();
         expect(MQTT.publish).toHaveBeenCalledTimes(1);
         expect(MQTT.publish.mock.calls[0][0]).toStrictEqual('zigbee2mqtt/SP600_OLD');
-        expect(JSON.parse(MQTT.publish.mock.calls[0][1])).toStrictEqual({energy: 6.648, power: 496});
+        expect(JSON.parse(MQTT.publish.mock.calls[0][1])).toStrictEqual({energy: 6.65, power: 496});
+    });
+
+    it('Should emit DevicesChanged event when a converter announces changed exposes', async () => {
+        const device = zigbeeHerdsman.devices['BMCT-SLZ'];
+        const data = {deviceMode: 0}
+        const payload = {data, cluster: 'boschSpecific', device, endpoint: device.getEndpoint(1), type: 'attributeReport', linkquality: 10};
+        await zigbeeHerdsman.events.message(payload);
+        expect(MQTT.publish.mock.calls[0][0]).toStrictEqual("zigbee2mqtt/bridge/devices");
     });
 });
